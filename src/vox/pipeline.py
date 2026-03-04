@@ -1,15 +1,22 @@
-"""Main voice loop orchestration."""
+"""Main voice loop orchestration.
+
+Supports two response modes:
+  - Text mode: chunks print to terminal as they stream in
+  - Voice mode: chunks queue to TTS for real-time speech
+"""
 
 from __future__ import annotations
+
+import sys
 
 from vox.config import MIC_DEVICE_INDEX, SPEAKER_DEVICE_INDEX
 
 
 def run(no_wake: bool = False, text_mode: bool = False, model_override: str | None = None) -> None:
-    """Main VOX loop: wake → listen → think → speak → repeat."""
+    """Main VOX loop: wake -> listen -> think -> speak -> repeat."""
     print("=" * 50)
-    print("  VOX — Voice Operated eXecutive")
-    print("  Fully local AI assistant")
+    print("  VOX - Voice Operated eXecutive")
+    print("  Local-first AI assistant")
     print("=" * 50)
     print()
 
@@ -20,11 +27,16 @@ def run(no_wake: bool = False, text_mode: bool = False, model_override: str | No
 
 
 def _run_text_mode(model_override: str | None) -> None:
-    """Text-only mode — no audio hardware needed."""
+    """Text mode with streaming output."""
     from vox.llm import chat
 
-    print("[VOX] Text mode — type your messages below.")
+    print("[VOX] Text mode - type your messages below.")
     print("[VOX] Type 'quit' or Ctrl+C to exit.\n")
+
+    def print_chunk(text: str) -> None:
+        """Print each chunk as it arrives — no newline, immediate flush."""
+        sys.stdout.write(text)
+        sys.stdout.flush()
 
     try:
         while True:
@@ -33,21 +45,23 @@ def _run_text_mode(model_override: str | None) -> None:
                 continue
             if user_input.lower() in ("quit", "exit", "q"):
                 break
-            response = chat(user_input, model_override=model_override)
-            print(f"VOX: {response}\n")
+            sys.stdout.write("VOX: ")
+            sys.stdout.flush()
+            chat(user_input, model_override=model_override, on_chunk=print_chunk)
+            print("\n")
     except (KeyboardInterrupt, EOFError):
         print("\n[VOX] Goodbye.")
 
 
 def _run_voice_mode(no_wake: bool, model_override: str | None) -> None:
-    """Full voice pipeline: wake → listen → think → speak."""
+    """Full voice pipeline with streaming TTS."""
     from vox.audio import play_audio, record_until_silence
     from vox.llm import chat
     from vox.stt import transcribe
     from vox.tts import speak
     from vox.wake import wait_for_activation
 
-    print("[VOX] Voice mode — speak after activation.")
+    print("[VOX] Voice mode - speak after activation.")
     print("[VOX] Ctrl+C to exit.\n")
 
     try:
@@ -65,10 +79,10 @@ def _run_voice_mode(no_wake: bool, model_override: str | None) -> None:
                 print("[VOX] Didn't catch that, try again.")
                 continue
 
-            # 4. Think
+            # 4. Think + speak (streamed)
             response = chat(text, model_override=model_override)
 
-            # 5. Speak
+            # 5. Full TTS on complete response (until streaming TTS is implemented)
             tts_audio = speak(response)
             if len(tts_audio) > 0:
                 play_audio(tts_audio, device_index=SPEAKER_DEVICE_INDEX)
