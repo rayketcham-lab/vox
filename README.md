@@ -1,17 +1,19 @@
 # VOX — Voice Operated eXecutive
 
-> Fully local AI voice assistant powered by your GPU. Zero cloud. Total privacy.
+> Local-first AI voice assistant powered by your GPU. Your hardware, your data.
 
-VOX is a local-first voice assistant that runs entirely on your hardware. No cloud APIs, no telemetry, no data leaves your network. Wake it with your voice, ask questions, control your environment — all processed locally on your GPU.
+VOX runs LLM inference, speech recognition, and voice synthesis directly on your GPU via Ollama, Faster-Whisper, and Piper/XTTS. No cloud AI APIs. No per-token billing. No data leaves your machine during inference.
+
+**How it works:** Ollama serves a quantized LLM from VRAM on your RTX 3090 (~112 tokens/sec). Whisper transcribes your voice on-GPU. Piper or XTTS synthesizes speech on-GPU. The only network calls are optional tools you choose to enable (weather, etc).
 
 ## Features
 
-- **Wake Word Detection** — Always-listening trigger phrase (Porcupine)
-- **Speech-to-Text** — GPU-accelerated transcription (Faster-Whisper)
-- **LLM Reasoning** — Local language model with tool calling (Ollama)
-- **Text-to-Speech** — Natural voice output (Piper / XTTS v2)
-- **Tool Calling** — Extensible function system for real-world actions
-- **100% Offline** — Works without internet after initial setup
+- **Wake Word Detection** — Always-listening trigger phrase (Porcupine, runs on CPU)
+- **Speech-to-Text** — GPU-accelerated transcription (Faster-Whisper on CUDA)
+- **LLM Reasoning** — Local model on your GPU via Ollama, with tool calling
+- **Text-to-Speech** — Natural voice synthesis (Piper for speed / XTTS v2 for quality)
+- **Tool Calling** — Extensible function registry for real-world actions
+- **Fast** — Sub-second LLM responses, model stays hot in VRAM
 
 ## Requirements
 

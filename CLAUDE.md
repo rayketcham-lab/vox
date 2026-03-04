@@ -1,11 +1,14 @@
 # VOX — Voice Operated eXecutive
 
 ## Project Overview
-Fully local AI voice assistant powered by an RTX 3090. Zero cloud dependency,
-total privacy. Wake word activation, speech-to-text, LLM reasoning with tool
-calling, and text-to-speech — all running on local hardware.
+Local-first AI voice assistant powered by an RTX 3090. LLM inference, speech
+recognition, and voice synthesis all run on your GPU — no cloud AI APIs, no
+per-token costs. Optional tools (weather, web) can reach the internet, but
+the core voice loop is fully local.
 
 **PUBLIC REPOSITORY** — Never commit secrets, API keys, passwords, or personal data.
+CI runs TruffleHog, pattern scanning for secrets, IP addresses, and blocks
+.env/.pem/.key files automatically.
 
 ## Tech Stack
 - **Language**: Python 3.10+

@@ -23,7 +23,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Scan for secrets
+      - name: Scan for secrets (TruffleHog)
         uses: trufflesecurity/trufflehog@main
         with:
           extra_args: --only-verified
+
+  safety-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Block .env files
+        run: |
+          if find . -name '.env' -not -name '.env.example' | grep -q .; then
+            echo "::error::BLOCKED — .env file detected in commit! Never commit secrets."
+            exit 1
+          fi
+      - name: Block private keys and certificates
+        run: |
+          FOUND=$(find . -type f \( -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \) | head -5)
+          if [ -n "$FOUND" ]; then
+            echo "::error::BLOCKED — Private key/cert files detected: $FOUND"
+            exit 1
+          fi
+      - name: Scan for hardcoded secrets patterns
+        run: |
+          # Check for common secret patterns in Python files
+          PATTERNS='(password|secret|api_key|token|credential)\s*=\s*["\x27][^"\x27]{8,}'
+          if grep -rEi "$PATTERNS" src/ --include='*.py' | grep -v 'os.environ' | grep -v '.get(' | grep -v 'example' | grep -v '#'; then
+            echo "::error::BLOCKED — Possible hardcoded secret found in source code!"
+            exit 1
+          fi
+          echo "No hardcoded secrets detected."
+      - name: Scan for IP addresses and hostnames
+        run: |
+          # Check for hardcoded internal IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+          if grep -rEn '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' src/ --include='*.py' | grep -v '127.0.0.1' | grep -v '#'; then
+            echo "::error::BLOCKED — Internal IP address found in source code!"
+            exit 1
+          fi
+          echo "No internal IPs detected."
