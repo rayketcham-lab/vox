@@ -1,0 +1,46 @@
+[project]
+name = "vox"
+version = "0.1.0"
+description = "VOX — Voice Operated eXecutive. Fully local AI voice assistant on RTX 3090."
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+dependencies = [
+    "faster-whisper>=1.0.0",
+    "ollama>=0.4.0",
+    "pvporcupine>=3.0.0",
+    "sounddevice>=0.5.0",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+xtts = [
+    "TTS>=0.22.0",
+    "torch>=2.5.0",
+]
+piper = [
+    "piper-tts>=1.2.0",
+]
+dev = [
+    "ruff>=0.8.0",
+    "pytest>=8.0.0",
+    "pre-commit>=3.0.0",
+]
+all = [
+    "vox[xtts,piper,dev]",
+]
+
+[project.scripts]
+vox = "vox.cli:main"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "S"]
+ignore = ["S603", "S607"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

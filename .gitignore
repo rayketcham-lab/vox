@@ -1,0 +1,82 @@
+# ==============================
+# VOX .gitignore — PUBLIC REPO
+# Safety-first: block ALL secrets
+# ==============================
+
+# --- Secrets & Credentials ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+credentials/
+*.secret
+*.password
+*_secret*
+*_key*
+*.token
+api_key*
+auth_token*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.venv/
+venv/
+env/
+
+# --- Models & Large Files ---
+models/
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.tflite
+*.pb
+
+# --- Audio / Media ---
+recordings/
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.lnk
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Claude ---
+.claude/
+
+# --- Misc ---
+*.bak
+*.tmp
+*.temp
+node_modules/
