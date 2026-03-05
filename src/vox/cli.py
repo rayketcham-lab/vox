@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--no-wake", action="store_true", help="Skip wake word, listen immediately")
     parser.add_argument("--text", action="store_true", help="Text-only mode (no microphone/speaker)")
     parser.add_argument("--model", type=str, default=None, help="Override Ollama model name")
+    parser.add_argument("--web", action="store_true", help="Launch web UI instead of voice pipeline")
+    parser.add_argument("--port", type=int, default=None, help="Port for web UI (default: 8080)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -33,9 +35,14 @@ def main():
         print(sd.query_devices())
         return
 
-    from vox.pipeline import run
+    if args.web:
+        from vox.web import start_server
 
-    run(no_wake=args.no_wake, text_mode=args.text, model_override=args.model)
+        start_server(port=args.port)
+    else:
+        from vox.pipeline import run
+
+        run(no_wake=args.no_wake, text_mode=args.text, model_override=args.model)
 
 
 if __name__ == "__main__":

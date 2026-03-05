@@ -60,6 +60,10 @@ VOX_PERSONA_NAME = os.environ.get("VOX_PERSONA_NAME", "")
 VOX_PERSONA_DESCRIPTION = os.environ.get("VOX_PERSONA_DESCRIPTION", "")
 VOX_PERSONA_STYLE = os.environ.get("VOX_PERSONA_STYLE", "photorealistic, natural lighting, high detail, 8k")
 
+# Web UI
+WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")  # noqa: S104 — intentional LAN binding
+WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+
 # Home Assistant (optional)
 HASS_URL = os.environ.get("HASS_URL", "")
 HASS_TOKEN = os.environ.get("HASS_TOKEN", "")

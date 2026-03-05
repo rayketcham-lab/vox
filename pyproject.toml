@@ -1,6 +1,6 @@
 [project]
 name = "vox"
-version = "0.9.1"
+version = "0.10.0"
 description = "VOX — Voice Operated eXecutive. Local-first AI voice assistant on RTX 3090."
 requires-python = ">=3.10"
 license = "MIT"
@@ -29,13 +29,17 @@ image = [
     "safetensors",
     "Pillow",
 ]
+web = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+]
 dev = [
     "ruff>=0.8.0",
     "pytest>=8.0.0",
     "pre-commit>=3.0.0",
 ]
 all = [
-    "vox[xtts,piper,image,dev]",
+    "vox[xtts,piper,image,web,dev]",
 ]
 
 [project.scripts]
