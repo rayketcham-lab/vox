@@ -197,6 +197,21 @@ _add_pattern(
     lambda m, t: {"to": _extract_email(t)},
     "I'll send that over...",
 )
+# Selfie / persona-aware image triggers — HIGHEST PRIORITY for image generation.
+# Must come BEFORE generic "show me a picture" patterns so "show me a selfie"
+# and "take a pic" route through persona-aware prompt building.
+_add_pattern(
+    r"\b(selfie|selfy)\b"
+    r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"
+    r"|\bwhat\s+do\s+you\s+look\s+like\b"
+    r"|\bshow\s+(me\s+)?(yourself|what\s+you\s+look\s+like)"
+    r"|\btake\s+a\s+(pic|picture|photo|selfie|snap|shot)\b"
+    r"|\bsend\s+me\s+a\s+(selfie|pic|picture|photo)\s+(of\s+)?(you|yourself)"
+    r"|\blet\s+me\s+see\s+you\b",
+    "generate_image",
+    lambda m, t: {"prompt": _build_persona_prompt(t), "_selfie": True},
+    "Let me take a pic for you...",
+)
 # Image generation patterns — BEFORE generic "email/mail me" so
 # "email me a picture" routes to generate_image (not send_email)
 _add_pattern(
@@ -237,19 +252,6 @@ _add_pattern(
     "generate_image",
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
-)
-# Selfie / persona-aware image triggers — "send me a selfie", "take a pic", "what do you look like"
-_add_pattern(
-    r"\b(selfie|selfy)\b"
-    r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"
-    r"|\bwhat\s+do\s+you\s+look\s+like\b"
-    r"|\bshow\s+(me\s+)?(yourself|what\s+you\s+look\s+like)"
-    r"|\btake\s+a\s+(pic|picture|photo|selfie|snap|shot)\b"
-    r"|\bsend\s+me\s+a\s+(selfie|pic|picture|photo)\s+(of\s+)?(you|yourself)"
-    r"|\blet\s+me\s+see\s+you\b",
-    "generate_image",
-    lambda m, t: {"prompt": _build_persona_prompt(t), "_selfie": True},
-    "Let me take a pic for you...",
 )
 # Generic "email/mail me" / "send me" (no address) — AFTER image patterns
 _add_pattern(
@@ -801,7 +803,7 @@ def _web_fetch(url: str = "", **kwargs) -> str:
 
 @_register("generate_image")
 def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **kwargs) -> str:
-    """Generate an image using Stable Diffusion."""
+    """Generate an image using Stable Diffusion (SDXL preferred, SD 1.5 fallback)."""
     from vox.config import (
         DOWNLOADS_DIR,
         IMAGE_HEIGHT,
@@ -810,43 +812,52 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         IMAGE_NSFW_FILTER,
         IMAGE_STEPS,
         IMAGE_WIDTH,
-        VOX_PERSONA_DESCRIPTION,
-        VOX_PERSONA_STYLE,
     )
 
     if not prompt:
         return "No image prompt provided."
 
     # For selfie requests, the prompt is already built by _build_persona_prompt.
-    # For non-selfie requests, check if the user is asking about the persona
-    # and prepend persona description if configured.
     if _selfie:
-        full_prompt = prompt  # already persona-aware from _build_persona_prompt
+        full_prompt = prompt
     elif style:
         full_prompt = f"{prompt}, {style}"
     else:
         full_prompt = prompt
-    log.info("generate_image: prompt=%r, style=%r, model=%s", prompt, style, IMAGE_MODEL)
+    log.info("generate_image: prompt=%r, style=%r, selfie=%s, model=%s", prompt, style, _selfie, IMAGE_MODEL)
     log.info("generate_image: steps=%d, size=%dx%d, nsfw_filter=%s",
              IMAGE_STEPS, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_NSFW_FILTER)
 
     try:
         import torch
-        from diffusers import StableDiffusionPipeline
     except ImportError:
-        log.error("generate_image: diffusers not installed")
-        return "Image generation requires the 'diffusers' package. Install with: pip install vox[image]"
+        log.error("generate_image: torch not installed")
+        return "Image generation requires PyTorch. Install with: pip install vox[image]"
+
+    # Detect whether we're using SDXL or SD 1.5 based on model name
+    is_sdxl = "xl" in IMAGE_MODEL.lower() or "sdxl" in IMAGE_MODEL.lower()
 
     try:
-        log.info("Loading Stable Diffusion pipeline: %s", IMAGE_MODEL)
-        pipe_kwargs = {
-            "torch_dtype": torch.float16,
-        }
-        if IMAGE_NSFW_FILTER.lower() == "off":
-            log.info("NSFW safety checker disabled")
-            pipe_kwargs["safety_checker"] = None
+        if is_sdxl:
+            from diffusers import StableDiffusionXLPipeline
+            log.info("Loading SDXL pipeline: %s", IMAGE_MODEL)
+            pipe_kwargs = {
+                "torch_dtype": torch.float16,
+                "variant": "fp16",
+                "use_safetensors": True,
+            }
+            pipe = StableDiffusionXLPipeline.from_pretrained(IMAGE_MODEL, **pipe_kwargs)
+        else:
+            from diffusers import StableDiffusionPipeline
+            log.info("Loading SD 1.5 pipeline: %s", IMAGE_MODEL)
+            pipe_kwargs = {
+                "torch_dtype": torch.float16,
+            }
+            if IMAGE_NSFW_FILTER.lower() == "off":
+                log.info("NSFW safety checker disabled")
+                pipe_kwargs["safety_checker"] = None
+            pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL, **pipe_kwargs)
 
-        pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL, **pipe_kwargs)
         pipe = pipe.to("cuda")
         pipe.enable_attention_slicing()
         log.info("Pipeline loaded and moved to CUDA")
@@ -869,6 +880,9 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
 
         return f"Image generated and saved to {filepath}"
 
+    except ImportError:
+        log.error("generate_image: diffusers not installed")
+        return "Image generation requires the 'diffusers' package. Install with: pip install vox[image]"
     except Exception as e:
         log.exception("generate_image failed: %s", e)
         return f"Image generation failed: {e}"

@@ -35,12 +35,18 @@ def _print_config_summary() -> None:
         features.append("email")
     try:
         import torch  # noqa: F401
-        from diffusers import StableDiffusionPipeline  # noqa: F401
-        features.append("image-gen")
+        from diffusers import StableDiffusionXLPipeline  # noqa: F401
+        features.append("image-gen:SDXL")
         if IMAGE_NSFW_FILTER.lower() == "off":
             features.append("NSFW-filter:off")
     except ImportError:
-        pass
+        try:
+            from diffusers import StableDiffusionPipeline  # noqa: F401
+            features.append("image-gen:SD1.5")
+            if IMAGE_NSFW_FILTER.lower() == "off":
+                features.append("NSFW-filter:off")
+        except ImportError:
+            pass
     if VOX_PERSONA_NAME:
         features.append("persona")
     if features:

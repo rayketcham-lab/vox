@@ -42,11 +42,11 @@ SMTP_FROM = os.environ.get("SMTP_FROM", "")
 USER_EMAIL = os.environ.get("USER_EMAIL", "")  # default "email me" recipient
 
 # Image generation (optional — requires diffusers)
-IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "runwayml/stable-diffusion-v1-5")
+IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
 IMAGE_NSFW_FILTER = os.environ.get("IMAGE_NSFW_FILTER", "on")
 IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "30"))
-IMAGE_WIDTH = int(os.environ.get("IMAGE_WIDTH", "512"))
-IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "512"))
+IMAGE_WIDTH = int(os.environ.get("IMAGE_WIDTH", "1024"))
+IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "1024"))
 IMAGE_NEGATIVE_PROMPT = os.environ.get(
     "IMAGE_NEGATIVE_PROMPT",
     "deformed, bad anatomy, extra limbs, mutated hands, poorly drawn face, "
