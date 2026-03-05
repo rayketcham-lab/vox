@@ -9,15 +9,45 @@ from __future__ import annotations
 
 import sys
 
+from vox import __version__
 from vox.config import MIC_DEVICE_INDEX, SPEAKER_DEVICE_INDEX
+
+
+def _print_config_summary() -> None:
+    """Print active configuration so the user knows what's enabled."""
+    from vox.config import (
+        IMAGE_NSFW_FILTER,
+        OLLAMA_MODEL,
+        SMTP_HOST,
+        TTS_ENGINE,
+        WHISPER_MODEL,
+    )
+
+    print(f"  Model:  {OLLAMA_MODEL}")
+    print(f"  STT:    Whisper ({WHISPER_MODEL})")
+    print(f"  TTS:    {TTS_ENGINE}")
+
+    features = []
+    if SMTP_HOST:
+        features.append("email")
+    try:
+        import diffusers  # noqa: F401
+        features.append("image-gen")
+        if IMAGE_NSFW_FILTER.lower() == "off":
+            features.append("NSFW-filter:off")
+    except ImportError:
+        pass
+    if features:
+        print(f"  Tools:  {', '.join(features)}")
 
 
 def run(no_wake: bool = False, text_mode: bool = False, model_override: str | None = None) -> None:
     """Main VOX loop: wake -> listen -> think -> speak -> repeat."""
     print("=" * 50)
-    print("  VOX - Voice Operated eXecutive")
+    print(f"  VOX v{__version__} — Voice Operated eXecutive")
     print("  Local-first AI assistant")
     print("=" * 50)
+    _print_config_summary()
     print()
 
     if text_mode:
