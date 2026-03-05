@@ -157,6 +157,11 @@ def _build_search_query(text: str) -> str:
         r"^(can you|could you|please|hey vox|vox)\s+",
         "", text.strip(), flags=re.IGNORECASE,
     )
+    # Remove search/research command words
+    q = re.sub(
+        r"^(search\s+for|search|look\s*up|find|google|research|look\s+into|find\s+out|tell\s+me\s+about|explain\s+what)\s+",
+        "", q, flags=re.IGNORECASE,
+    )
     # Remove email-related tail ("...email me at foo@bar.com...")
     q = re.sub(r"\b(and\s+)?(can you\s+)?email\b.*$", "", q, flags=re.IGNORECASE).strip()
     # Remove trailing punctuation
@@ -184,10 +189,17 @@ _add_pattern(
     "Let me check the system...",
 )
 _add_pattern(
-    r"\b(search|look\s*up|find|google|search\s+for)\b",
+    r"\b(search|look\s*up|find|google|search\s+for|research)\b",
     "web_search",
     lambda m, t: {"query": _build_search_query(t)},
     "Let me search for that...",
+)
+# Broad research triggers — "what is X", "who is X", "tell me about X"
+_add_pattern(
+    r"\b(what\s+is|who\s+is|tell\s+me\s+about|explain\s+what|look\s+into|find\s+out)\b",
+    "web_search",
+    lambda m, t: {"query": _build_search_query(t)},
+    "Let me look that up...",
 )
 _add_pattern(
     r"\b(download|fetch|open|get|grab)\b.*\b(pdf|page|url|link|site|website)\b",
@@ -369,7 +381,7 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         re.IGNORECASE,
     ),
     "web_search": re.compile(
-        r"\b(search|look\s*up|find|google|lookup)\b",
+        r"\b(search|look\s*up|find|google|lookup|research|what\s+is|who\s+is|tell\s+me\s+about)\b",
         re.IGNORECASE,
     ),
     "web_fetch": re.compile(
@@ -662,10 +674,19 @@ def _web_search(query: str = "", **kwargs) -> str:
     if not query:
         return "No search query provided."
 
+    # Privacy-first headers — no tracking, no cookies
+    _ANON_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "DNT": "1",
+        "Sec-GPC": "1",
+    }
+
     try:
         encoded = urllib.parse.urlencode({"q": query, "format": "json"})
         url = f"https://api.duckduckgo.com/?{encoded}"
-        req = urllib.request.Request(url, headers={"User-Agent": "VOX/0.1"})
+        req = urllib.request.Request(url, headers=_ANON_HEADERS)
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
 
@@ -689,7 +710,7 @@ def _web_search(query: str = "", **kwargs) -> str:
         if not results:
             # Fallback: try a scrape of DuckDuckGo HTML lite
             html_url = f"https://html.duckduckgo.com/html/?{urllib.parse.urlencode({'q': query})}"
-            req = urllib.request.Request(html_url, headers={"User-Agent": "VOX/0.1"})
+            req = urllib.request.Request(html_url, headers=_ANON_HEADERS)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
 
@@ -827,7 +848,12 @@ def _web_fetch(url: str = "", **kwargs) -> str:
         return f"Invalid URL: {url}"
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "VOX/0.1"})
+        _fetch_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            "DNT": "1",
+            "Sec-GPC": "1",
+        }
+        req = urllib.request.Request(url, headers=_fetch_headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             content_type = resp.headers.get("Content-Type", "")
             data = resp.read()

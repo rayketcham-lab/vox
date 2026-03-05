@@ -15,7 +15,7 @@ import ollama
 
 log = logging.getLogger(__name__)
 
-from vox.config import OLLAMA_HOST, OLLAMA_MODEL, SYSTEM_PROMPT
+from vox.config import OLLAMA_HOST, OLLAMA_MODEL, SYSTEM_PROMPT, VISION_MODEL
 from vox.tools import (
     TOOL_DEFINITIONS,
     DetectedIntent,
@@ -248,6 +248,69 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
             if on_chunk:
                 on_chunk(token)
     log.info("LLM response (%d chars): %s", len(full_response), full_response[:200])
+    return full_response
+
+
+def chat_with_vision(
+    user_message: str,
+    images: list[str],
+    on_chunk: callable | None = None,
+) -> str:
+    """Send a message with images to a vision-capable model (e.g., llava).
+
+    Args:
+        user_message: What the user said.
+        images: List of base64-encoded image strings.
+        on_chunk: Optional callback for streaming text chunks.
+
+    Returns:
+        Full response text.
+    """
+    client = _get_client()
+    model = VISION_MODEL
+
+    # Clean base64 strings — strip data URL prefix if present
+    clean_images = []
+    for img in images:
+        if "," in img:
+            img = img.split(",", 1)[1]
+        clean_images.append(img)
+
+    _history.append({"role": "user", "content": user_message})
+    while len(_history) > MAX_HISTORY:
+        _history.pop(0)
+
+    # Build messages with images for the vision model
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *_history[:-1],  # history without the last user message
+        {
+            "role": "user",
+            "content": user_message,
+            "images": clean_images,
+        },
+    ]
+
+    log.info("Vision chat: model=%s, images=%d, message=%s", model, len(clean_images), user_message[:80])
+
+    full_response = ""
+    try:
+        stream = client.chat(model=model, messages=messages, stream=True)
+        for chunk in stream:
+            token = chunk["message"].get("content", "")
+            if token:
+                full_response += token
+                if on_chunk:
+                    on_chunk(token)
+    except Exception as e:
+        log.exception("Vision chat failed: %s", e)
+        error_msg = f"Vision analysis failed — make sure '{model}' is pulled in Ollama: ollama pull {model}"
+        if on_chunk:
+            on_chunk(error_msg)
+        full_response = error_msg
+
+    _history.append({"role": "assistant", "content": full_response})
+    log.info("Vision response (%d chars): %s", len(full_response), full_response[:200])
     return full_response
 
 

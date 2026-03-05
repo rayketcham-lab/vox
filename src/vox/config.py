@@ -73,6 +73,9 @@ VOX_PERSONA_STYLE = os.environ.get(
     "natural skin texture, film grain, candid pose, raw photo, 8k",
 )
 
+# Vision model (for analyzing uploaded images — must support multimodal)
+VISION_MODEL = os.environ.get("VISION_MODEL", "llava")
+
 # Web UI
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")  # noqa: S104 — intentional LAN binding
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
