@@ -90,19 +90,23 @@ def _chat_with_concurrent_tool(
         print(f"[LLM] Tool result: {tool_result[:100]}...")
 
     # 4. Now ask the LLM to synthesize a natural response with the real data
+    _history.append({"role": "assistant", "content": intent.bridge_phrase})
     _history.append({"role": "tool", "content": tool_result})
 
-    synthesis_prompt = (
-        f"You already told the user: \"{intent.bridge_phrase}\"\n"
-        f"Now continue your response naturally using this data:\n{tool_result}\n"
-        f"Do NOT repeat the bridge phrase. Just continue the sentence with the answer. "
-        f"Be concise — 1-3 sentences."
+    # Use role: "user" for the synthesis instruction — many smaller models
+    # ignore trailing system messages but always respond to user messages.
+    synthesis_msg = (
+        f"[SYSTEM INSTRUCTION — do not read this aloud]\n"
+        f"The tool returned this data:\n{tool_result}\n\n"
+        f"Now respond to the user's original question using the data above. "
+        f"Do NOT say \"{intent.bridge_phrase}\" again — you already said that. "
+        f"Just give the answer naturally. Be concise — 1-3 sentences."
     )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         *_history,
-        {"role": "system", "content": synthesis_prompt},
+        {"role": "user", "content": synthesis_msg},
     ]
 
     # Stream the synthesis
@@ -114,6 +118,13 @@ def _chat_with_concurrent_tool(
             full_response += token
             if on_chunk:
                 on_chunk(token)
+
+    # If synthesis returned nothing, just format the tool result directly
+    if full_response.strip() == intent.bridge_phrase.strip():
+        print("[LLM] Synthesis empty — using tool result directly")
+        full_response = intent.bridge_phrase + " " + tool_result.split("\n")[0]
+        if on_chunk:
+            on_chunk(tool_result.split("\n")[0])
 
     print(f"[LLM] Full response: {full_response}")
     return full_response

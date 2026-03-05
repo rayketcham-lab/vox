@@ -136,3 +136,55 @@ def test_validate_tool_call_blocks_irrelevant(tool, text):
 def test_validate_unknown_tool_passes_through():
     """Unknown tools should pass validation (execute_tool handles the error)."""
     assert validate_tool_call("nonexistent_tool", "anything") is True
+
+
+# ---------------------------------------------------------------------------
+# Arg extraction — web_search gets a real query, send_email gets an address
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected_query_contains", [
+    (
+        "find me schematics for the electrical system on a 2007 Chevy Tahoe",
+        "schematics for the electrical system on a 2007 Chevy Tahoe",
+    ),
+    (
+        "search for RTX 4090 specs",
+        "RTX 4090 specs",
+    ),
+    (
+        "Can you look up Python asyncio tutorial",
+        "look up Python asyncio tutorial",
+    ),
+])
+def test_web_search_extracts_query(text, expected_query_contains):
+    intent = detect_intent(text)
+    assert intent is not None
+    assert intent.tool_name == "web_search"
+    query = intent.args.get("query", "")
+    assert len(query) > 5, f"Query too short: '{query}'"
+    assert expected_query_contains.lower() in query.lower(), (
+        f"Expected '{expected_query_contains}' in query '{query}'"
+    )
+
+
+@pytest.mark.parametrize("text,expected_email", [
+    ("email me at ray@example.com", "ray@example.com"),
+    ("can you email the results to test@test.org", "test@test.org"),
+])
+def test_send_email_extracts_address(text, expected_email):
+    intent = detect_intent(text)
+    assert intent is not None
+    assert intent.tool_name == "send_email"
+    assert intent.args.get("to") == expected_email
+
+
+def test_combined_search_and_email_detects_search_first():
+    """When user asks to search AND email, search should fire first (it comes first in patterns)."""
+    text = "find me schematics for a Chevy Tahoe and email them to ray@test.com"
+    intent = detect_intent(text)
+    assert intent is not None
+    assert intent.tool_name == "web_search"
+    query = intent.args.get("query", "")
+    # Query should NOT include the email tail
+    assert "@" not in query, f"Email leaked into query: '{query}'"
+    assert len(query) > 5

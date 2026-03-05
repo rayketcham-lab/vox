@@ -20,6 +20,7 @@ class DetectedIntent:
 
 
 # Pattern → (tool_name, arg_builder, bridge_phrase)
+# arg_builder receives (match, full_text) so it can extract args from the full user message
 _INTENT_PATTERNS: list[tuple[re.Pattern, str, callable, str]] = []
 
 
@@ -27,35 +28,55 @@ def _add_pattern(pattern: str, tool_name: str, arg_builder: callable, bridge: st
     _INTENT_PATTERNS.append((re.compile(pattern, re.IGNORECASE), tool_name, arg_builder, bridge))
 
 
+def _extract_email(text: str) -> str:
+    """Extract an email address from text."""
+    m = re.search(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", text)
+    return m.group(0) if m else ""
+
+
+def _build_search_query(text: str) -> str:
+    """Build a search query by stripping command words and email addresses."""
+    # Remove common command prefixes
+    q = re.sub(
+        r"^(can you|could you|please|hey vox|vox)\s+",
+        "", text.strip(), flags=re.IGNORECASE,
+    )
+    # Remove email-related tail ("...email me at foo@bar.com...")
+    q = re.sub(r"\b(and\s+)?(can you\s+)?email\b.*$", "", q, flags=re.IGNORECASE).strip()
+    # Remove trailing punctuation
+    q = q.rstrip("?.!")
+    return q
+
+
 # Register intent patterns
 _add_pattern(
     r"weather|forecast|temperature|rain|sunny|snow",
     "get_weather",
-    lambda m: {},
+    lambda m, t: {},
     "Let me check the forecast for you...",
 )
 _add_pattern(
     r"what time|current time|what.s the time",
     "get_current_time",
-    lambda m: {},
+    lambda m, t: {},
     "The time right now is",
 )
 _add_pattern(
     r"system info|gpu|vram|memory|cpu info",
     "get_system_info",
-    lambda m: {},
+    lambda m, t: {},
     "Let me check the system...",
 )
 _add_pattern(
-    r"\b(search|look\s*up|find|google|search\s+for)\b.*\b(for|about|on|me)?\b",
+    r"\b(search|look\s*up|find|google|search\s+for)\b",
     "web_search",
-    lambda m: {},
+    lambda m, t: {"query": _build_search_query(t)},
     "Let me search for that...",
 )
 _add_pattern(
     r"\bemail\b.*\b\S+@\S+\.\S+",
     "send_email",
-    lambda m: {},
+    lambda m, t: {"to": _extract_email(t)},
     "I'll send that over...",
 )
 
@@ -67,7 +88,7 @@ def detect_intent(text: str) -> DetectedIntent | None:
         if match:
             return DetectedIntent(
                 tool_name=tool_name,
-                args=arg_builder(match),
+                args=arg_builder(match, text),
                 bridge_phrase=bridge,
             )
     return None
