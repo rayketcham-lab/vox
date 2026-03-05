@@ -1,6 +1,6 @@
 [project]
 name = "vox"
-version = "0.4.1"
+version = "0.5.0"
 description = "VOX — Voice Operated eXecutive. Local-first AI voice assistant on RTX 3090."
 requires-python = ">=3.10"
 license = "MIT"

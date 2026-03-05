@@ -11,6 +11,8 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
+DOWNLOADS_DIR = PROJECT_ROOT / "downloads"
+DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 # Wake word
 PORCUPINE_ACCESS_KEY = os.environ.get("PORCUPINE_ACCESS_KEY", "")
@@ -52,8 +54,9 @@ TOOL USE RULES — follow these strictly:
 - get_current_time: ONLY when the user asks what time or date it is.
 - get_system_info: ONLY when the user asks about GPU, VRAM, CPU, or system specs.
 - web_search: When the user asks you to look up, find, or search for something on the internet.
-- send_email: When the user asks you to email or send something to an email address.
-- You can chain tools: search for something, then email the results if asked.
+- web_fetch: When the user asks to download, fetch, or open a URL or PDF.
+- send_email: When the user asks you to email or send something to an email address. Supports file attachments.
+- You can chain tools: search for something, fetch a PDF, then email it as an attachment.
 - If the user's request does not match any tool, do NOT call any tool. Just answer normally.
 - NEVER call a tool based on previous conversation context — only the current message.
 - When in doubt, do NOT use a tool."""

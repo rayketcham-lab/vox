@@ -34,6 +34,12 @@ def _extract_email(text: str) -> str:
     return m.group(0) if m else ""
 
 
+def _extract_url(text: str) -> str:
+    """Extract a URL from text."""
+    m = re.search(r"https?://\S+", text)
+    return m.group(0).rstrip(".,;!?)") if m else ""
+
+
 def _build_search_query(text: str) -> str:
     """Build a search query by stripping command words and email addresses."""
     # Remove common command prefixes
@@ -72,6 +78,18 @@ _add_pattern(
     "web_search",
     lambda m, t: {"query": _build_search_query(t)},
     "Let me search for that...",
+)
+_add_pattern(
+    r"\b(download|fetch|open|get|grab)\b.*\b(pdf|page|url|link|site|website)\b",
+    "web_fetch",
+    lambda m, t: {"url": _extract_url(t)},
+    "Let me fetch that for you...",
+)
+_add_pattern(
+    r"https?://\S+",
+    "web_fetch",
+    lambda m, t: {"url": _extract_url(t)},
+    "Let me fetch that for you...",
 )
 _add_pattern(
     r"\bemail\b.*\b\S+@\S+\.\S+",
@@ -129,6 +147,10 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
     ),
     "web_search": re.compile(
         r"\b(search|look\s*up|find|google|lookup)\b",
+        re.IGNORECASE,
+    ),
+    "web_fetch": re.compile(
+        r"\b(download|fetch|open|get|grab|pdf|page|url|link|site|website)\b|https?://\S+",
         re.IGNORECASE,
     ),
     "send_email": re.compile(
@@ -209,6 +231,23 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return its content. For HTML pages, returns extracted text. For PDFs, downloads and saves the file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to fetch",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "send_email",
             "description": "Send an email to a recipient. Use when the user asks to email something to an address.",
             "parameters": {
@@ -225,6 +264,11 @@ TOOL_DEFINITIONS: list[dict] = [
                     "body": {
                         "type": "string",
                         "description": "Email body content",
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of file paths to attach",
                     },
                 },
                 "required": ["to", "subject", "body"],
@@ -329,6 +373,27 @@ def _get_weather(**kwargs) -> str:
         return f"Weather lookup failed: {e}"
 
 
+def _clean_ddg_url(url: str) -> str:
+    """Extract the real URL from a DuckDuckGo redirect wrapper.
+
+    DDG HTML lite wraps links like:
+        //duckduckgo.com/l/?uddg=https%3A%2F%2Freal-url.com&rut=abc123
+    This extracts and returns the decoded ``uddg`` parameter value.
+    Non-redirect URLs are returned unchanged.
+    """
+    if not url:
+        return url
+    import urllib.parse as _urlparse
+
+    parsed = _urlparse.urlparse(url)
+    if parsed.hostname and "duckduckgo.com" in parsed.hostname and parsed.path.startswith("/l/"):
+        qs = _urlparse.parse_qs(parsed.query)
+        uddg = qs.get("uddg")
+        if uddg:
+            return uddg[0]
+    return url
+
+
 @_register("web_search")
 def _web_search(query: str = "", **kwargs) -> str:
     """Search the web using DuckDuckGo HTML (no API key needed)."""
@@ -374,10 +439,12 @@ def _web_search(query: str = "", **kwargs) -> str:
             import re as _re
 
             snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.DOTALL)
-            links = _re.findall(r'class="result__url"[^>]*href="([^"]*)"', html)
+            links = _re.findall(r'class="result__a"[^>]*href="([^"]*)"', html)
+            if not links:
+                links = _re.findall(r'class="result__url"[^>]*href="([^"]*)"', html)
             for i, snippet in enumerate(snippets[:5]):
                 clean = _re.sub(r"<[^>]+>", "", snippet).strip()
-                link = links[i] if i < len(links) else ""
+                link = _clean_ddg_url(links[i]) if i < len(links) else ""
                 results.append(f"- {clean}")
                 if link:
                     results.append(f"  Link: {link}")
@@ -392,9 +459,20 @@ def _web_search(query: str = "", **kwargs) -> str:
 
 
 @_register("send_email")
-def _send_email(to: str = "", subject: str = "", body: str = "", **kwargs) -> str:
-    """Send an email via SMTP."""
+def _send_email(
+    to: str = "",
+    subject: str = "",
+    body: str = "",
+    attachments: list[str] | str = "",
+    **kwargs,
+) -> str:
+    """Send an email via SMTP, optionally with file attachments."""
+    import mimetypes
+    import os
     import smtplib
+    from email import encoders
+    from email.mime.base import MIMEBase
+    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     from vox.config import SMTP_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER
@@ -404,27 +482,106 @@ def _send_email(to: str = "", subject: str = "", body: str = "", **kwargs) -> st
     if not SMTP_HOST:
         return "Email not configured. Set SMTP_HOST in .env"
 
+    # Normalize attachments to a list
+    if isinstance(attachments, str):
+        attachment_list = [attachments] if attachments else []
+    else:
+        attachment_list = list(attachments) if attachments else []
+
+    warnings: list[str] = []
+
     try:
-        msg = MIMEText(body)
+        if attachment_list:
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(body))
+
+            for filepath in attachment_list:
+                if not os.path.isfile(filepath):
+                    warnings.append(f"Attachment not found, skipped: {filepath}")
+                    continue
+
+                content_type, _ = mimetypes.guess_type(filepath)
+                if content_type is None:
+                    content_type = "application/octet-stream"
+                maintype, subtype = content_type.split("/", 1)
+
+                with open(filepath, "rb") as f:
+                    part = MIMEBase(maintype, subtype)
+                    part.set_payload(f.read())
+
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    "attachment",
+                    filename=os.path.basename(filepath),
+                )
+                msg.attach(part)
+        else:
+            msg = MIMEText(body)
+
         msg["Subject"] = subject or "Message from VOX"
         msg["From"] = SMTP_FROM or SMTP_USER or f"vox@{SMTP_HOST}"
         msg["To"] = to
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
             server.ehlo()
-            # Use STARTTLS if the server supports it
             if server.has_extn("starttls"):
                 server.starttls()
                 server.ehlo()
-            # Authenticate if credentials are configured
             if SMTP_USER and SMTP_PASSWORD:
                 server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
 
-        return f"Email sent to {to} with subject: {subject}"
+        result = f"Email sent to {to} with subject: {subject}"
+        if warnings:
+            result += "\nWarnings: " + "; ".join(warnings)
+        return result
 
     except Exception as e:
         return f"Failed to send email: {e}"
+
+
+@_register("web_fetch")
+def _web_fetch(url: str = "", **kwargs) -> str:
+    """Fetch a URL: return text for HTML, save file for PDFs."""
+    import urllib.request
+
+    from vox.config import DOWNLOADS_DIR
+
+    if not url:
+        return "No URL provided."
+    if not re.match(r"https?://", url):
+        return f"Invalid URL: {url}"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "VOX/0.1"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.read()
+
+        if "application/pdf" in content_type or url.lower().endswith(".pdf"):
+            # Save PDF to downloads directory
+            filename = url.split("/")[-1].split("?")[0]
+            filename = re.sub(r"[^\w.\-]", "_", filename)
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+            filepath = DOWNLOADS_DIR / filename
+            filepath.write_bytes(data)
+            size_kb = len(data) / 1024
+            return f"PDF saved to {filepath} ({size_kb:.1f} KB)"
+        else:
+            # HTML or other text — strip tags and return text
+            text = data.decode("utf-8", errors="replace")
+            text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
+            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > 2000:
+                text = text[:2000] + "..."
+            return f"Content from {url}:\n{text}"
+
+    except Exception as e:
+        return f"Fetch failed: {e}"
 
 
 def execute_tool(name: str, args: dict) -> str:

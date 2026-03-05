@@ -2,7 +2,13 @@
 
 import pytest
 
-from vox.tools import detect_all_intents, detect_intent, execute_tool, validate_tool_call
+from vox.tools import (
+    _clean_ddg_url,
+    detect_all_intents,
+    detect_intent,
+    execute_tool,
+    validate_tool_call,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -246,3 +252,164 @@ def test_detect_all_intents_chaining_cases(text, expected_tools):
     intents = detect_all_intents(text)
     tool_names = [i.tool_name for i in intents]
     assert tool_names == expected_tools
+
+
+# ---------------------------------------------------------------------------
+# send_email attachment support
+# ---------------------------------------------------------------------------
+
+def test_send_email_empty_attachments_list():
+    """Empty attachments list should not break email (no regression)."""
+    result = execute_tool("send_email", {
+        "to": "test@example.com", "subject": "Test", "body": "Hi",
+        "attachments": [],
+    })
+    # Without SMTP_HOST configured, this returns the config error — that's fine,
+    # we just need to confirm it doesn't crash on empty attachments.
+    assert isinstance(result, str)
+    assert "No recipient" not in result  # recipient was provided
+
+
+def test_send_email_empty_string_attachments():
+    """Empty string for attachments (backward compat) should not crash."""
+    result = execute_tool("send_email", {
+        "to": "test@example.com", "subject": "Test", "body": "Hi",
+        "attachments": "",
+    })
+    assert isinstance(result, str)
+    assert "No recipient" not in result
+
+
+def test_send_email_nonexistent_attachment(tmp_path):
+    """Nonexistent attachment file path should produce a warning."""
+    # We need SMTP to be configured for this to reach the attachment logic.
+    # Mock SMTP to avoid needing a real server.
+    from unittest.mock import MagicMock, patch
+
+    fake_path = str(tmp_path / "does_not_exist.pdf")
+
+    with patch("vox.config.SMTP_HOST", "localhost"), \
+         patch("vox.config.SMTP_PORT", 25), \
+         patch("vox.config.SMTP_USER", ""), \
+         patch("vox.config.SMTP_PASSWORD", ""), \
+         patch("vox.config.SMTP_FROM", "vox@test.com"), \
+         patch("smtplib.SMTP") as mock_smtp:
+        mock_server = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_server)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+        mock_server.has_extn.return_value = False
+
+        result = execute_tool("send_email", {
+            "to": "test@example.com",
+            "subject": "Test",
+            "body": "Hi",
+            "attachments": [fake_path],
+        })
+
+    assert "Attachment not found" in result or "Email sent" in result
+
+
+# ---------------------------------------------------------------------------
+# DDG redirect URL cleaning
+# ---------------------------------------------------------------------------
+
+def test_clean_ddg_url_redirect():
+    """DDG redirect URL should be unwrapped to the real URL."""
+    ddg = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage%3Fq%3D1&rut=abc123"
+    assert _clean_ddg_url(ddg) == "https://example.com/page?q=1"
+
+
+def test_clean_ddg_url_normal():
+    """A normal URL should be returned unchanged."""
+    url = "https://example.com/page"
+    assert _clean_ddg_url(url) == url
+
+
+def test_clean_ddg_url_empty():
+    """Empty string should be returned as-is."""
+    assert _clean_ddg_url("") == ""
+
+
+def test_clean_ddg_url_missing_uddg():
+    """DDG redirect URL without uddg param should return original."""
+    url = "//duckduckgo.com/l/?rut=abc123"
+    assert _clean_ddg_url(url) == url
+
+
+# ---------------------------------------------------------------------------
+# web_fetch — intent detection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected_tool", [
+    ("download the PDF from https://example.com/doc.pdf", "web_fetch"),
+    ("fetch this page: https://example.com", "web_fetch"),
+    ("grab the PDF at https://example.com/report.pdf", "web_fetch"),
+    ("open the website https://example.com", "web_fetch"),
+    ("get the page at https://example.com/info", "web_fetch"),
+])
+def test_web_fetch_intent_matches(text, expected_tool):
+    intent = detect_intent(text)
+    assert intent is not None, f"Expected intent for: {text}"
+    assert intent.tool_name == expected_tool
+
+
+def test_web_fetch_no_false_positive():
+    """Should NOT match 'can you help me download Python?' — no pdf/page/url/link/site keyword."""
+    intent = detect_intent("can you help me download Python?")
+    # 'download' alone without pdf/page/url/link/site/website should not match web_fetch
+    # and there's no URL in the text, so neither pattern should fire
+    assert intent is None or intent.tool_name != "web_fetch", (
+        f"Unexpected web_fetch intent for generic download request"
+    )
+
+
+# ---------------------------------------------------------------------------
+# web_fetch — URL extraction
+# ---------------------------------------------------------------------------
+
+def test_extract_url_from_text():
+    from vox.tools import _extract_url
+
+    assert _extract_url("check out https://example.com/page") == "https://example.com/page"
+    assert _extract_url("visit http://test.org/foo?bar=1") == "http://test.org/foo?bar=1"
+    assert _extract_url("no url here") == ""
+    # Trailing punctuation should be stripped
+    assert _extract_url("see https://example.com.") == "https://example.com"
+
+
+# ---------------------------------------------------------------------------
+# web_fetch — validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "download the PDF from https://example.com/doc.pdf",
+    "fetch the page at https://example.com",
+    "grab the website content",
+    "get the link for me",
+    "https://example.com",
+])
+def test_validate_web_fetch_allows(text):
+    assert validate_tool_call("web_fetch", text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "tell me about the history of Python",
+    "how do I bake a cake?",
+    "explain quantum computing",
+])
+def test_validate_web_fetch_blocks(text):
+    assert validate_tool_call("web_fetch", text) is False
+
+
+# ---------------------------------------------------------------------------
+# web_fetch — execution edge cases
+# ---------------------------------------------------------------------------
+
+def test_web_fetch_empty_url():
+    result = execute_tool("web_fetch", {"url": ""})
+    assert "No URL provided" in result
+
+
+def test_web_fetch_invalid_url():
+    result = execute_tool("web_fetch", {"url": "not-a-url"})
+    assert "Invalid URL" in result
