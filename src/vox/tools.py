@@ -395,6 +395,18 @@ def detect_all_intents(text: str) -> list[DetectedIntent]:
                 bridge_phrase=bridge,
             ))
             seen.add(tool_name)
+
+    # Suppress send_email when generate_image is primary and user didn't
+    # mention an explicit email address — "send me a selfie" means show it,
+    # not email it.
+    if (
+        intents
+        and intents[0].tool_name == "generate_image"
+        and any(i.tool_name == "send_email" for i in intents)
+        and not re.search(r"\S+@\S+\.\S+", text)
+    ):
+        intents = [i for i in intents if i.tool_name != "send_email"]
+
     if intents:
         log.info("All intents: %s", [i.tool_name for i in intents])
     return intents
@@ -1051,10 +1063,32 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         pipe.enable_attention_slicing()
         log.info("Pipeline loaded and moved to CUDA")
 
-        log.info("Generating image: %r (negative: %r)", full_prompt, IMAGE_NEGATIVE_PROMPT[:60])
+        # Split long prompts for SDXL dual encoder — subject in prompt,
+        # style/quality in prompt_2 (each gets 77 tokens)
+        prompt_1 = full_prompt
+        prompt_2 = None
+        if is_sdxl and len(full_prompt.split()) > 60:
+            # Find a natural split point — style tags usually start after the scene
+            style_markers = ["photorealistic", "shot on", "shallow depth", "film grain", "raw photo", "8k"]
+            split_idx = len(full_prompt)
+            for marker in style_markers:
+                idx = full_prompt.lower().find(marker)
+                if idx > 0 and idx < split_idx:
+                    split_idx = idx
+            if split_idx < len(full_prompt):
+                prompt_1 = full_prompt[:split_idx].rstrip(", ")
+                prompt_2 = full_prompt[split_idx:]
+                log.info("Split prompt for SDXL dual encoder: p1=%d chars, p2=%d chars", len(prompt_1), len(prompt_2))
+
+        log.info("Generating image: %r (negative: %r)", prompt_1[:120], IMAGE_NEGATIVE_PROMPT[:60])
+        gen_kwargs = {
+            "negative_prompt": IMAGE_NEGATIVE_PROMPT or None,
+        }
+        if prompt_2 and is_sdxl:
+            gen_kwargs["prompt_2"] = prompt_2
         result = pipe(
-            full_prompt,
-            negative_prompt=IMAGE_NEGATIVE_PROMPT or None,
+            prompt_1,
+            **gen_kwargs,
             num_inference_steps=IMAGE_STEPS,
             width=IMAGE_WIDTH,
             height=IMAGE_HEIGHT,

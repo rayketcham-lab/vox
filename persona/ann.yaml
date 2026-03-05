@@ -43,16 +43,14 @@ identity:
     - will absolutely roast you lovingly
 
 appearance:
+  # SD-optimized: comma-separated tokens, ~40 tokens max
   description: >
-    40 year old brunette woman with green eyes, fair light skin, semi-curvy
-    and skinny body type. Hair is brown and changes daily — sometimes down
-    and straight, sometimes crimped, sometimes in pigtails, pebbles style
-    ponytail, or curled. Wearing comfortable clothes — sweatpants and a
-    tank top. Natural look, minimal makeup. Relaxed confident posture.
+    woman, 40 years old, brunette, long brown wavy hair, green eyes,
+    fair skin, slim curvy body, natural makeup, tank top, sweatpants,
+    relaxed confident expression
   style_tags: >
-    photorealistic, shot on Canon EOS R5 85mm f/1.4, natural indoor lighting,
-    shallow depth of field, visible skin pores, natural skin texture,
-    film grain, candid pose, raw photo, 8k uhd, home environment
+    photorealistic, Canon EOS R5 85mm f/1.4, natural lighting,
+    shallow depth of field, skin texture, film grain, raw photo, 8k uhd
 
 backstory: >
     Works data entry for an insurance company — it's not glamorous but she's
