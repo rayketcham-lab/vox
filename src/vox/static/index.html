@@ -428,17 +428,46 @@ html, body {
   gap: 10px;
 }
 
-.gallery-grid img {
+.gallery-item {
+  position: relative;
+}
+
+.gallery-item img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 8px;
   cursor: pointer;
   transition: transform 0.15s;
+  display: block;
 }
 
-.gallery-grid img:hover {
+.gallery-item img:hover {
   transform: scale(1.03);
+}
+
+.gallery-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  color: var(--danger);
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 2;
+}
+
+.gallery-item:hover .gallery-delete {
+  opacity: 1;
 }
 
 .gallery-empty {
@@ -776,6 +805,9 @@ html, body {
           return;
         }
         images.forEach(function(item) {
+          var wrapper = document.createElement("div");
+          wrapper.className = "gallery-item";
+
           var el = document.createElement("img");
           el.src = item.url || item;
           el.alt = item.filename || "Image";
@@ -783,7 +815,31 @@ html, body {
           el.addEventListener("click", function() {
             openLightbox(el.src);
           });
-          galleryGrid.appendChild(el);
+
+          var delBtn = document.createElement("button");
+          delBtn.className = "gallery-delete";
+          delBtn.textContent = "\u00D7";
+          delBtn.title = "Delete image";
+          delBtn.addEventListener("click", function(e) {
+            e.stopPropagation();
+            if (!confirm("Delete this image?")) return;
+            fetch("/api/images/" + encodeURIComponent(item.filename), { method: "DELETE" })
+              .then(function(r) {
+                if (r.ok) {
+                  wrapper.remove();
+                  if (!galleryGrid.querySelector(".gallery-item")) {
+                    galleryGrid.appendChild(createGalleryEmpty("No images yet"));
+                  }
+                } else {
+                  showToast("Failed to delete image");
+                }
+              })
+              .catch(function() { showToast("Failed to delete image"); });
+          });
+
+          wrapper.appendChild(delBtn);
+          wrapper.appendChild(el);
+          galleryGrid.appendChild(wrapper);
         });
       })
       .catch(function() {

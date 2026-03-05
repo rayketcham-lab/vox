@@ -54,7 +54,7 @@ def _is_selfie_request(text: str) -> bool:
         r"|\b(what\s+do\s+you\s+look\s+like)"
         r"|\b(show\s+(me\s+)?(yourself|what\s+you\s+look\s+like))"
         r"|\b(take\s+a\s+(pic|picture|photo|selfie|snap|shot))\b"
-        r"|\b(send\s+me\s+a\s+(selfie|pic|picture|photo)\s+(of\s+)?(you|yourself))"
+        r"|\b(send|email|mail|give)\s+me\s+a\s+(selfie|pic|picture|photo)"
         r"|\b(let\s+me\s+see\s+you)\b",
         text, re.IGNORECASE,
     ))
@@ -201,27 +201,27 @@ _add_pattern(
     lambda m, t: {"url": _extract_url(t)},
     "Let me fetch that for you...",
 )
-# Email with explicit address (highest priority for email)
-_add_pattern(
-    r"\b(email|mail)\b.*\b\S+@\S+\.\S+",
-    "send_email",
-    lambda m, t: {"to": _extract_email(t)},
-    "I'll send that over...",
-)
 # Selfie / persona-aware image triggers — HIGHEST PRIORITY for image generation.
-# Must come BEFORE generic "show me a picture" patterns so "show me a selfie"
-# and "take a pic" route through persona-aware prompt building.
+# Must come BEFORE email patterns so "send me a selfie" routes to generate_image first,
+# with send_email chained as secondary.
 _add_pattern(
     r"\b(selfie|selfy)\b"
     r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"
     r"|\bwhat\s+do\s+you\s+look\s+like\b"
     r"|\bshow\s+(me\s+)?(yourself|what\s+you\s+look\s+like)"
     r"|\btake\s+a\s+(pic|picture|photo|selfie|snap|shot)\b"
-    r"|\bsend\s+me\s+a\s+(selfie|pic|picture|photo)\s+(of\s+)?(you|yourself)"
+    r"|\b(send|email|mail|give)\s+me\s+a\s+(selfie|pic|picture|photo)"
     r"|\blet\s+me\s+see\s+you\b",
     "generate_image",
     lambda m, t: {"prompt": _build_persona_prompt(t), "_selfie": True},
     "Let me take a pic for you...",
+)
+# Email with explicit address (highest priority for email)
+_add_pattern(
+    r"\b(email|mail)\b.*\b\S+@\S+\.\S+",
+    "send_email",
+    lambda m, t: {"to": _extract_email(t)},
+    "I'll send that over...",
 )
 # Image generation patterns — BEFORE generic "email/mail me" so
 # "email me a picture" routes to generate_image (not send_email)
@@ -384,7 +384,7 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b"
         r"|\b(draw|paint)\s+me\b"
         r"|\bimagine\b"
-        r"|\b(email|mail|send|give|show)\s+me\b.*\b(image|picture|photo|pic|pics)\b"
+        r"|\b(email|mail|send|give|show)\s+me\b.*\b(image|picture|photo|pic|pics|selfie)\b"
         r"|\b\d+\s+(picture|image|photo|pic|pics)\w*\s+(of|with)\b"
         r"|\b(selfie|selfy)\b"
         r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"

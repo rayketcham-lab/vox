@@ -42,6 +42,22 @@ async def list_images():
     return [{"filename": img.name, "url": f"/downloads/{img.name}"} for img in images]
 
 
+@app.delete("/api/images/{filename}")
+async def delete_image(filename: str):
+    """Delete a single image from downloads/."""
+    # Sanitize — only allow simple filenames, no path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+    filepath = DOWNLOADS_DIR / filename
+    if not filepath.exists() or not filepath.suffix == ".png":
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Image not found"}, status_code=404)
+    filepath.unlink()
+    log.info("Deleted image: %s", filename)
+    return {"deleted": filename}
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(ws: WebSocket):
     await ws.accept()
