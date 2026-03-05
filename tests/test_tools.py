@@ -618,3 +618,54 @@ def test_nsfw_routing_disabled_when_filter_on(monkeypatch):
     monkeypatch.setattr("vox.config.IMAGE_NSFW_FILTER", "on")
     assert _should_use_nsfw_model("a naked woman", False) is False
     assert _should_use_nsfw_model("selfie prompt", True) is False
+
+
+# ---------------------------------------------------------------------------
+# Implicit NSFW image intent — no "image/picture" keyword needed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "show me a pair of big titties on a skinny blond",
+    "show me a naked woman",
+    "give me some sexy girls in bikinis",
+    "make a nude portrait",
+    "draw me a topless brunette",
+    "create a seductive pose",
+    "show me tits",
+    "get me a sexy blonde",
+    "show me a hot girl in lingerie",
+])
+def test_nsfw_implicit_image_intent(text):
+    """NSFW body keywords + action verb should trigger image generation."""
+    intent = detect_intent(text)
+    assert intent is not None, f"Expected image intent for: {text}"
+    assert intent.tool_name == "generate_image"
+
+
+@pytest.mark.parametrize("text", [
+    "tell me about lingerie brands",
+    "what is the definition of nude in art?",
+    "how do bikinis affect body image?",
+])
+def test_nsfw_no_false_positive_without_verb(text):
+    """NSFW words without visual verb should NOT trigger image generation."""
+    intent = detect_intent(text)
+    if intent is not None:
+        assert intent.tool_name != "generate_image", (
+            f"Unexpected image intent for informational query: {text}"
+        )
+
+
+def test_nsfw_prompt_extraction():
+    """NSFW image request should produce a clean prompt."""
+    prompt = _extract_image_prompt("show me a pair of big titties on a skinny blond")
+    assert "big titties" in prompt.lower() or "titties" in prompt.lower()
+    assert "show me" not in prompt.lower()
+
+
+def test_nsfw_keywords_route_to_nsfw_model(monkeypatch):
+    """Expanded body keywords should route to NSFW model."""
+    monkeypatch.setattr("vox.config.IMAGE_NSFW_FILTER", "off")
+    assert _should_use_nsfw_model("big titties on a skinny blond", False) is True
+    assert _should_use_nsfw_model("a woman's boobs", False) is True
+    assert _should_use_nsfw_model("ass and butt", False) is True

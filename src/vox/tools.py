@@ -261,6 +261,26 @@ _add_pattern(
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
 )
+# Broad "show me a [description]" — lowest-priority image trigger.
+# Catches requests like "show me a cat on a beach" without requiring
+# an explicit image noun (picture/photo/etc).
+_add_pattern(
+    r"\bshow\s+me\s+(a|an|some|the)\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
+# NSFW body keywords + action verb — implicit image request that bypasses LLM
+# refusal.  "show me big titties" or "make a sexy blonde" etc.
+_add_pattern(
+    r"\b(show|give|make|get|draw|paint|create|generate)\b.*\b("
+    r"naked|nude|nsfw|topless|lingerie|bikini|sexy|seductive|erotic"
+    r"|tits|titties|boobs|breasts|ass|butt|pussy|blowjob|porn|hentai"
+    r"|bondage|fetish)\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
 # Generic "email/mail me" / "send me" (no address) — AFTER image patterns
 _add_pattern(
     r"\b(email|mail|send)\s+(me|it|this|that|the)\b",
@@ -343,7 +363,8 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"
         r"|\bwhat\s+do\s+you\s+look\s+like\b"
         r"|\btake\s+a\s+(pic|picture|photo|selfie|snap|shot)\b"
-        r"|\blet\s+me\s+see\s+you\b",
+        r"|\blet\s+me\s+see\s+you\b"
+        r"|\bshow\s+me\s+(a|an|some|the)\b",
         re.IGNORECASE,
     ),
 }
@@ -811,7 +832,9 @@ def _web_fetch(url: str = "", **kwargs) -> str:
 
 _NSFW_KEYWORDS = re.compile(
     r"\b(naked|nude|nsfw|topless|lingerie|underwear|bikini|sexy|seductive"
-    r"|erotic|sensual|provocative|undress|strip|bare|exposed)\b",
+    r"|erotic|sensual|provocative|undress|strip|bare|exposed"
+    r"|tits|titties|boobs|breasts|ass|butt|pussy|dick|cock|penis"
+    r"|blowjob|handjob|porn|hentai|bondage|fetish|orgasm|cum)\b",
     re.IGNORECASE,
 )
 
@@ -827,6 +850,48 @@ def _should_use_nsfw_model(prompt: str, selfie: bool) -> bool:
         return True
     # Check for NSFW keywords in the prompt
     return bool(_NSFW_KEYWORDS.search(prompt))
+
+
+def _is_single_file_checkpoint(model_id: str) -> bool:
+    """Check if a HuggingFace repo contains only a single-file checkpoint (no diffusers format)."""
+    try:
+        from huggingface_hub import model_info
+        info = model_info(model_id)
+        safetensor_files = [s for s in info.siblings if s.rfilename.endswith(".safetensors")]
+        has_model_index = any(s.rfilename == "model_index.json" for s in info.siblings)
+        # Single-file checkpoint: has .safetensors but no model_index.json (diffusers format)
+        return bool(safetensor_files) and not has_model_index
+    except Exception:
+        return False
+
+
+def _get_single_file_url(model_id: str) -> str | None:
+    """Get the download URL for the single .safetensors file in a HuggingFace repo."""
+    try:
+        from huggingface_hub import model_info
+        info = model_info(model_id)
+        for s in info.siblings:
+            if s.rfilename.endswith(".safetensors"):
+                return f"https://huggingface.co/{model_id}/resolve/main/{s.rfilename}"
+        return None
+    except Exception:
+        return None
+
+
+def _load_pipeline(pipeline_cls, model_id: str, dtype):
+    """Load a diffusers pipeline, auto-detecting single-file vs diffusers-format checkpoints."""
+    if _is_single_file_checkpoint(model_id):
+        url = _get_single_file_url(model_id)
+        if url:
+            log.info("Single-file checkpoint detected, using from_single_file: %s", url)
+            return pipeline_cls.from_single_file(url, torch_dtype=dtype)
+    # Standard diffusers format
+    pipe_kwargs = {"torch_dtype": dtype}
+    if "stabilityai" in model_id.lower():
+        pipe_kwargs["variant"] = "fp16"
+        pipe_kwargs["use_safetensors"] = True
+    log.info("Loading diffusers-format model: %s", model_id)
+    return pipeline_cls.from_pretrained(model_id, **pipe_kwargs)
 
 
 @_register("generate_image")
@@ -875,14 +940,7 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         if is_sdxl:
             from diffusers import StableDiffusionXLPipeline
             log.info("Loading SDXL pipeline: %s", model_id)
-            pipe_kwargs = {
-                "torch_dtype": torch.float16,
-                "use_safetensors": True,
-            }
-            # Only request fp16 variant for models that ship one
-            if "stabilityai" in model_id.lower():
-                pipe_kwargs["variant"] = "fp16"
-            pipe = StableDiffusionXLPipeline.from_pretrained(model_id, **pipe_kwargs)
+            pipe = _load_pipeline(StableDiffusionXLPipeline, model_id, torch.float16)
         else:
             from diffusers import StableDiffusionPipeline
             log.info("Loading SD 1.5 pipeline: %s", model_id)
