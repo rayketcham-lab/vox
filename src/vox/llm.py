@@ -28,6 +28,12 @@ from vox.tools import (
 _history: list[dict] = []
 MAX_HISTORY = 20
 
+# Per-tool timeouts — GPU-heavy tools need much longer than API calls
+_TOOL_TIMEOUTS: dict[str, int] = {
+    "generate_image": 300,  # model download + load + inference
+}
+_DEFAULT_TIMEOUT = 15
+
 
 def _get_client() -> ollama.Client:
     return ollama.Client(host=OLLAMA_HOST)
@@ -102,8 +108,9 @@ def _chat_with_concurrent_tool(
         log.info("Bridge: %s", primary.bridge_phrase)
         log.info("Tool '%s' running concurrently with args=%s", primary.tool_name, primary.args)
 
-        # 3. Wait for tool result (usually <1s for API calls)
-        tool_result = tool_future.result(timeout=10)
+        # 3. Wait for tool result (API calls ~1s, image gen ~5-60s)
+        timeout = _TOOL_TIMEOUTS.get(primary.tool_name, _DEFAULT_TIMEOUT)
+        tool_result = tool_future.result(timeout=timeout)
         log.info("Tool '%s' result (%d chars): %s", primary.tool_name, len(tool_result), tool_result[:200])
 
     # 4. Run chained tools sequentially (e.g., email the search results)
