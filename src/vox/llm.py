@@ -163,7 +163,9 @@ def _chat_with_concurrent_tool(
         f"The tools returned this data:\n{all_results}\n\n"
         f"Now respond to the user's original question using the data above. "
         f"Do NOT say \"{primary.bridge_phrase}\" again — you already said that. "
-        f"Just give the answer naturally. Be concise — 1-3 sentences."
+        f"Just give the answer naturally. Be concise — 1-3 sentences. "
+        f"NEVER mention file paths, folder names, or drive letters in your response. "
+        f"The image is displayed automatically in the chat — just describe what you did."
     )
 
     messages = [

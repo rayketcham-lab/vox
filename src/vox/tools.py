@@ -67,6 +67,32 @@ def _build_persona_prompt(text: str) -> str:
     # Extract scene/context modifiers from the user's request.
     # Strategy: strip everything that ISN'T a scene/pose/location modifier.
     scene = text.strip()
+
+    # Pre-process: convert action phrases into SD-friendly descriptors
+    scene = re.sub(
+        r"\btake\s+(your|my|the)\s+(shirt|top|clothes|bra)\s+off\b",
+        "topless", scene, flags=re.IGNORECASE,
+    )
+    scene = re.sub(
+        r"\b(without|no|remove)\s+(your|my|the)\s+(shirt|top|clothes|bra)\b",
+        "topless", scene, flags=re.IGNORECASE,
+    )
+    scene = re.sub(
+        r"\btake\s+(your|my|the)\s+(pants|jeans|shorts|bottoms|skirt)\s+off\b",
+        "bottomless", scene, flags=re.IGNORECASE,
+    )
+    scene = re.sub(
+        r"\btake\s+(it\s+)?all\s+off\b", "nude", scene, flags=re.IGNORECASE,
+    )
+    scene = re.sub(
+        r"\b(strip|undress|naked|nude)\b", "nude", scene, flags=re.IGNORECASE,
+    )
+    # "and show me a selfie" → just remove, we already know it's a selfie
+    scene = re.sub(
+        r"\b(and\s+)?(show|send|give|take)\s+(me\s+)?(a\s+)?(selfie|pic|picture|photo)\b",
+        "", scene, flags=re.IGNORECASE,
+    )
+
     # Strip conversational fluff and compliments
     scene = re.sub(r"^.*?\b(can\s+(i|you)|could\s+(i|you)|i\s+(want|need|like|love|would))\b", "", scene, flags=re.IGNORECASE)
     scene = re.sub(r"^.*?\b(have\s+a|get\s+a|see\s+a|give\s+me)\b", "", scene, flags=re.IGNORECASE)
