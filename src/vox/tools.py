@@ -46,6 +46,60 @@ def _extract_url(text: str) -> str:
     return m.group(0).rstrip(".,;!?)") if m else ""
 
 
+def _is_selfie_request(text: str) -> bool:
+    """Check if the text is asking for a selfie / picture of the assistant."""
+    return bool(re.search(
+        r"\b(selfie|selfy)\b"
+        r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself|your\s*(self|face|body))"
+        r"|\b(what\s+do\s+you\s+look\s+like)"
+        r"|\b(show\s+(me\s+)?(yourself|what\s+you\s+look\s+like))"
+        r"|\b(take\s+a\s+(pic|picture|photo|selfie|snap|shot))\b"
+        r"|\b(send\s+me\s+a\s+(selfie|pic|picture|photo)\s+(of\s+)?(you|yourself))"
+        r"|\b(let\s+me\s+see\s+you)\b",
+        text, re.IGNORECASE,
+    ))
+
+
+def _build_persona_prompt(text: str) -> str:
+    """Build an SD prompt using the persona description + any scene context from the user."""
+    from vox.config import VOX_PERSONA_DESCRIPTION, VOX_PERSONA_STYLE
+
+    # Extract scene/context modifiers from the user's request
+    scene = text.strip()
+    # Strip common prefixes
+    scene = re.sub(r"^(can you|could you|please|hey vox|vox)\s+", "", scene, flags=re.IGNORECASE)
+    # Strip selfie-related command words
+    scene = re.sub(
+        r"^(send|give|show|take|email|mail)\s+(me\s+)?(a\s+)?",
+        "", scene, flags=re.IGNORECASE,
+    )
+    scene = re.sub(
+        r"^(selfie|selfy|pic|picture|photo|image|snap|shot)\s*(of\s+)?(you|yourself)?\s*",
+        "", scene, flags=re.IGNORECASE,
+    )
+    # Strip "what do you look like" style queries
+    scene = re.sub(r"^(what\s+do\s+you\s+look\s+like)\s*", "", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"^(show\s+(me\s+)?(yourself|what\s+you\s+look\s+like))\s*", "", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"^(let\s+me\s+see\s+you)\s*", "", scene, flags=re.IGNORECASE)
+    # Strip email-related tail
+    scene = re.sub(r"\b(and\s+)?(email|send|mail)\b.*$", "", scene, flags=re.IGNORECASE).strip()
+    scene = re.sub(r"\b(at|to)\s+\S+@\S+\.\S+.*$", "", scene, flags=re.IGNORECASE).strip()
+    # Clean up remaining artifacts
+    scene = re.sub(r"^(at\s+the|at|in\s+the|in|on\s+the|on|by\s+the|by|with)\s+", r"\g<0>", scene, flags=re.IGNORECASE)
+    scene = scene.strip().rstrip("?.!,")
+
+    # Build the full prompt: persona description + scene context + style
+    parts = []
+    if VOX_PERSONA_DESCRIPTION:
+        parts.append(VOX_PERSONA_DESCRIPTION)
+    if scene:
+        parts.append(scene)
+    if VOX_PERSONA_STYLE:
+        parts.append(VOX_PERSONA_STYLE)
+
+    return ", ".join(parts) if parts else "a portrait"
+
+
 def _extract_image_prompt(text: str) -> str:
     """Extract an image prompt by stripping command words and filler."""
     prompt = re.sub(
@@ -184,6 +238,19 @@ _add_pattern(
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
 )
+# Selfie / persona-aware image triggers — "send me a selfie", "take a pic", "what do you look like"
+_add_pattern(
+    r"\b(selfie|selfy)\b"
+    r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"
+    r"|\bwhat\s+do\s+you\s+look\s+like\b"
+    r"|\bshow\s+(me\s+)?(yourself|what\s+you\s+look\s+like)"
+    r"|\btake\s+a\s+(pic|picture|photo|selfie|snap|shot)\b"
+    r"|\bsend\s+me\s+a\s+(selfie|pic|picture|photo)\s+(of\s+)?(you|yourself)"
+    r"|\blet\s+me\s+see\s+you\b",
+    "generate_image",
+    lambda m, t: {"prompt": _build_persona_prompt(t), "_selfie": True},
+    "Let me take a pic for you...",
+)
 # Generic "email/mail me" / "send me" (no address) — AFTER image patterns
 _add_pattern(
     r"\b(email|mail|send)\s+(me|it|this|that|the)\b",
@@ -261,7 +328,12 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         r"|\b(draw|paint)\s+me\b"
         r"|\bimagine\b"
         r"|\b(email|mail|send|give|show)\s+me\b.*\b(image|picture|photo|pic|pics)\b"
-        r"|\b\d+\s+(picture|image|photo|pic|pics)\w*\s+(of|with)\b",
+        r"|\b\d+\s+(picture|image|photo|pic|pics)\w*\s+(of|with)\b"
+        r"|\b(selfie|selfy)\b"
+        r"|\b(picture|pic|photo|image)\s+(of\s+)?(you|yourself)"
+        r"|\bwhat\s+do\s+you\s+look\s+like\b"
+        r"|\btake\s+a\s+(pic|picture|photo|selfie|snap|shot)\b"
+        r"|\blet\s+me\s+see\s+you\b",
         re.IGNORECASE,
     ),
 }
@@ -728,7 +800,7 @@ def _web_fetch(url: str = "", **kwargs) -> str:
 
 
 @_register("generate_image")
-def _generate_image(prompt: str = "", style: str = "", **kwargs) -> str:
+def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **kwargs) -> str:
     """Generate an image using Stable Diffusion."""
     from vox.config import (
         DOWNLOADS_DIR,
@@ -738,12 +810,22 @@ def _generate_image(prompt: str = "", style: str = "", **kwargs) -> str:
         IMAGE_NSFW_FILTER,
         IMAGE_STEPS,
         IMAGE_WIDTH,
+        VOX_PERSONA_DESCRIPTION,
+        VOX_PERSONA_STYLE,
     )
 
     if not prompt:
         return "No image prompt provided."
 
-    full_prompt = f"{prompt}, {style}" if style else prompt
+    # For selfie requests, the prompt is already built by _build_persona_prompt.
+    # For non-selfie requests, check if the user is asking about the persona
+    # and prepend persona description if configured.
+    if _selfie:
+        full_prompt = prompt  # already persona-aware from _build_persona_prompt
+    elif style:
+        full_prompt = f"{prompt}, {style}"
+    else:
+        full_prompt = prompt
     log.info("generate_image: prompt=%r, style=%r, model=%s", prompt, style, IMAGE_MODEL)
     log.info("generate_image: steps=%d, size=%dx%d, nsfw_filter=%s",
              IMAGE_STEPS, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_NSFW_FILTER)

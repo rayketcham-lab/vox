@@ -20,12 +20,15 @@ def _print_config_summary() -> None:
         OLLAMA_MODEL,
         SMTP_HOST,
         TTS_ENGINE,
+        VOX_PERSONA_NAME,
         WHISPER_MODEL,
     )
 
     print(f"  Model:  {OLLAMA_MODEL}")
     print(f"  STT:    Whisper ({WHISPER_MODEL})")
     print(f"  TTS:    {TTS_ENGINE}")
+    if VOX_PERSONA_NAME:
+        print(f"  Persona: {VOX_PERSONA_NAME}")
 
     features = []
     if SMTP_HOST:
@@ -38,6 +41,8 @@ def _print_config_summary() -> None:
             features.append("NSFW-filter:off")
     except ImportError:
         pass
+    if VOX_PERSONA_NAME:
+        features.append("persona")
     if features:
         print(f"  Tools:  {', '.join(features)}")
 

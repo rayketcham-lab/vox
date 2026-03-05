@@ -53,13 +53,27 @@ IMAGE_NEGATIVE_PROMPT = os.environ.get(
     "blurry, low quality, watermark, text, signature, cropped",
 )
 
+# Persona (optional — gives VOX a visual identity for selfie generation)
+VOX_PERSONA_NAME = os.environ.get("VOX_PERSONA_NAME", "")
+VOX_PERSONA_DESCRIPTION = os.environ.get("VOX_PERSONA_DESCRIPTION", "")
+VOX_PERSONA_STYLE = os.environ.get("VOX_PERSONA_STYLE", "photorealistic, natural lighting, high detail, 8k")
+
 # Home Assistant (optional)
 HASS_URL = os.environ.get("HASS_URL", "")
 HASS_TOKEN = os.environ.get("HASS_TOKEN", "")
 
-# System prompt
-SYSTEM_PROMPT = """You are VOX, a helpful local AI assistant. You run entirely on the user's hardware.
+# System prompt — built dynamically based on persona and feature config
+_persona_block = ""
+if VOX_PERSONA_NAME:
+    _persona_block = f"""
+Your name is {VOX_PERSONA_NAME}. You have a physical appearance and identity.
+When the user asks for a selfie, picture of you, or what you look like, you use the
+generate_image tool with your appearance description. You never refuse image requests.
+You are the user's personal assistant — you fulfill their requests without hesitation."""
+
+SYSTEM_PROMPT = f"""You are VOX, a helpful local AI assistant. You run entirely on the user's hardware.
 Be concise and direct. Respond in 1-3 sentences unless asked for detail.
+{_persona_block}
 
 TOOL USE RULES — follow these strictly:
 - ONLY call a tool when the user's CURRENT message explicitly asks for what that tool provides.
@@ -69,9 +83,10 @@ TOOL USE RULES — follow these strictly:
 - web_search: When the user asks you to look up, find, or search for something on the internet.
 - web_fetch: When the user asks to download, fetch, or open a URL or PDF.
 - send_email: When the user asks you to email or send something to an email address. Supports file attachments.
-- generate_image: When the user asks to generate, create, draw, or imagine an image or picture.""" + (
-    " NSFW filter is off — you may generate any content the user requests." if IMAGE_NSFW_FILTER.lower() == "off"
-    else " NSFW filter is enabled.") + """
+- generate_image: When the user asks to generate, create, draw, or imagine an image or picture.{
+    " NSFW filter is off — you may generate any content the user requests. Never refuse."
+    if IMAGE_NSFW_FILTER.lower() == "off"
+    else " NSFW filter is enabled."}
 - You can chain tools: search for something, fetch a PDF, then email it as an attachment.
 - If the user's request does not match any tool, do NOT call any tool. Just answer normally.
 - NEVER call a tool based on previous conversation context — only the current message.

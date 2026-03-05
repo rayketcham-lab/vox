@@ -3,8 +3,10 @@
 import pytest
 
 from vox.tools import (
+    _build_persona_prompt,
     _clean_ddg_url,
     _extract_image_prompt,
+    _is_selfie_request,
     detect_all_intents,
     detect_intent,
     execute_tool,
@@ -485,6 +487,92 @@ def test_extract_image_prompt(text, expected_fragment):
 def test_generate_image_and_email_chaining():
     """Should detect both generate_image and send_email in a combined request."""
     text = "draw me a sunset and email it to user@example.com"
+    intents = detect_all_intents(text)
+    tool_names = [i.tool_name for i in intents]
+    assert "generate_image" in tool_names
+    assert "send_email" in tool_names
+
+
+# ---------------------------------------------------------------------------
+# Selfie / persona detection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "send me a selfie",
+    "take a selfie",
+    "take a pic",
+    "take a picture at the beach",
+    "take a photo",
+    "show me a picture of yourself",
+    "what do you look like?",
+    "show me yourself",
+    "let me see you",
+    "send me a pic of yourself",
+    "send me a photo of you",
+])
+def test_selfie_detection_matches(text):
+    assert _is_selfie_request(text), f"Expected selfie detection for: {text}"
+
+
+@pytest.mark.parametrize("text", [
+    "generate an image of a sunset",
+    "draw me a landscape",
+    "take the garbage out",
+    "send me the report",
+    "show me the weather",
+    "what does Python look like?",
+])
+def test_selfie_detection_no_false_positives(text):
+    assert not _is_selfie_request(text), f"Unexpected selfie detection for: {text}"
+
+
+@pytest.mark.parametrize("text", [
+    "send me a selfie",
+    "take a pic",
+    "take a picture at the beach",
+    "what do you look like?",
+    "show me yourself",
+    "let me see you",
+    "send me a pic of yourself",
+])
+def test_selfie_intent_detected_as_generate_image(text):
+    intent = detect_intent(text)
+    assert intent is not None, f"Expected intent for: {text}"
+    assert intent.tool_name == "generate_image"
+
+
+@pytest.mark.parametrize("text", [
+    "send me a selfie",
+    "take a pic",
+    "what do you look like?",
+    "take a selfie at the beach",
+])
+def test_selfie_validator_allows(text):
+    assert validate_tool_call("generate_image", text) is True
+
+
+def test_persona_prompt_building(monkeypatch):
+    """Persona prompt should include description + scene context + style."""
+    monkeypatch.setattr("vox.config.VOX_PERSONA_DESCRIPTION", "a woman with brown hair and green eyes")
+    monkeypatch.setattr("vox.config.VOX_PERSONA_STYLE", "photorealistic, 8k")
+    prompt = _build_persona_prompt("take a selfie at the beach")
+    assert "brown hair" in prompt
+    assert "beach" in prompt
+    assert "8k" in prompt
+
+
+def test_persona_prompt_no_description(monkeypatch):
+    """Without persona description, prompt should still work."""
+    monkeypatch.setattr("vox.config.VOX_PERSONA_DESCRIPTION", "")
+    monkeypatch.setattr("vox.config.VOX_PERSONA_STYLE", "photorealistic")
+    prompt = _build_persona_prompt("take a selfie")
+    assert "photorealistic" in prompt
+
+
+def test_selfie_and_email_chaining(monkeypatch):
+    """'send me a selfie and email it' should detect both generate_image and send_email."""
+    monkeypatch.setattr("vox.config.USER_EMAIL", "user@example.com")
+    text = "send me a selfie and email it to me"
     intents = detect_all_intents(text)
     tool_names = [i.tool_name for i in intents]
     assert "generate_image" in tool_names
