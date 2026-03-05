@@ -46,6 +46,18 @@ _add_pattern(
     lambda m: {},
     "Let me check the system...",
 )
+_add_pattern(
+    r"\b(search|look\s*up|find|google|search\s+for)\b.*\b(for|about|on|me)?\b",
+    "web_search",
+    lambda m: {},
+    "Let me search for that...",
+)
+_add_pattern(
+    r"\bemail\b.*\b\S+@\S+\.\S+",
+    "send_email",
+    lambda m: {},
+    "I'll send that over...",
+)
 
 
 def detect_intent(text: str) -> DetectedIntent | None:
@@ -59,6 +71,45 @@ def detect_intent(text: str) -> DetectedIntent | None:
                 bridge_phrase=bridge,
             )
     return None
+
+
+# Validation patterns — stricter than intent detection.
+# Used to block spurious LLM-initiated tool calls that don't match the user's actual request.
+_TOOL_VALIDATORS: dict[str, re.Pattern] = {
+    "get_weather": re.compile(
+        r"\b(weather|forecast|temperature|rain(?:ing)?|sunny|snow(?:ing)?|storm|humid|wind|cold|hot|warm|cool)\b",
+        re.IGNORECASE,
+    ),
+    "get_current_time": re.compile(
+        r"\b(what time|current time|the time|the date|what day|today.s date)\b",
+        re.IGNORECASE,
+    ),
+    "get_system_info": re.compile(
+        r"\b(system info|gpu|vram|memory usage|cpu info|system stats|hardware)\b",
+        re.IGNORECASE,
+    ),
+    "web_search": re.compile(
+        r"\b(search|look\s*up|find|google|lookup)\b",
+        re.IGNORECASE,
+    ),
+    "send_email": re.compile(
+        r"\b(email|send|mail)\b.*\S+@\S+\.\S+",
+        re.IGNORECASE,
+    ),
+}
+
+
+def validate_tool_call(tool_name: str, user_message: str) -> bool:
+    """Check if a tool call is actually relevant to the user's current message.
+
+    This catches cases where the LLM hallucinates tool calls based on
+    conversation history rather than the current request.
+    """
+    validator = _TOOL_VALIDATORS.get(tool_name)
+    if validator is None:
+        # Unknown tool — let it through (execute_tool will handle the error)
+        return True
+    return bool(validator.search(user_message))
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +150,48 @@ TOOL_DEFINITIONS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for information. Use when the user asks to find something.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_email",
+            "description": "Send an email to a recipient. Use when the user asks to email something to an address.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient email address",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject line",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Email body content",
+                    },
+                },
+                "required": ["to", "subject", "body"],
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -135,7 +228,7 @@ def _get_system_info(**kwargs) -> str:
 
         if torch.cuda.is_available():
             gpu = torch.cuda.get_device_name(0)
-            vram = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             lines.append(f"GPU: {gpu} ({vram:.1f} GB VRAM)")
     except ImportError:
         lines.append("GPU: torch not available")
@@ -195,6 +288,98 @@ def _get_weather(**kwargs) -> str:
 
     except Exception as e:
         return f"Weather lookup failed: {e}"
+
+
+@_register("web_search")
+def _web_search(query: str = "", **kwargs) -> str:
+    """Search the web using DuckDuckGo HTML (no API key needed)."""
+    import json
+    import urllib.parse
+    import urllib.request
+
+    if not query:
+        return "No search query provided."
+
+    try:
+        encoded = urllib.parse.urlencode({"q": query, "format": "json"})
+        url = f"https://api.duckduckgo.com/?{encoded}"
+        req = urllib.request.Request(url, headers={"User-Agent": "VOX/0.1"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+        results = []
+
+        # Abstract (instant answer)
+        if data.get("Abstract"):
+            results.append(f"Summary: {data['Abstract']}")
+            if data.get("AbstractURL"):
+                results.append(f"Source: {data['AbstractURL']}")
+
+        # Related topics
+        for topic in data.get("RelatedTopics", [])[:5]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                text = topic["Text"]
+                url = topic.get("FirstURL", "")
+                results.append(f"- {text}")
+                if url:
+                    results.append(f"  Link: {url}")
+
+        if not results:
+            # Fallback: try a scrape of DuckDuckGo HTML lite
+            html_url = f"https://html.duckduckgo.com/html/?{urllib.parse.urlencode({'q': query})}"
+            req = urllib.request.Request(html_url, headers={"User-Agent": "VOX/0.1"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+
+            # Extract result snippets from HTML
+            import re as _re
+
+            snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.DOTALL)
+            links = _re.findall(r'class="result__url"[^>]*href="([^"]*)"', html)
+            for i, snippet in enumerate(snippets[:5]):
+                clean = _re.sub(r"<[^>]+>", "", snippet).strip()
+                link = links[i] if i < len(links) else ""
+                results.append(f"- {clean}")
+                if link:
+                    results.append(f"  Link: {link}")
+
+        if not results:
+            return f"No results found for: {query}"
+
+        return f"Search results for '{query}':\n" + "\n".join(results)
+
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+@_register("send_email")
+def _send_email(to: str = "", subject: str = "", body: str = "", **kwargs) -> str:
+    """Send an email via SMTP."""
+    import smtplib
+    from email.mime.text import MIMEText
+
+    from vox.config import SMTP_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER
+
+    if not to:
+        return "No recipient email address provided."
+    if not SMTP_HOST:
+        return "Email not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, SMTP_FROM in .env"
+
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject or "Message from VOX"
+        msg["From"] = SMTP_FROM or SMTP_USER
+        msg["To"] = to
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        return f"Email sent to {to} with subject: {subject}"
+
+    except Exception as e:
+        return f"Failed to send email: {e}"
 
 
 def execute_tool(name: str, args: dict) -> str:

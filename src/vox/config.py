@@ -31,6 +31,13 @@ WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
 # TTS
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")
 
+# Email (optional — SMTP for sending emails via tools)
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", "")
+
 # Home Assistant (optional)
 HASS_URL = os.environ.get("HASS_URL", "")
 HASS_TOKEN = os.environ.get("HASS_TOKEN", "")
@@ -38,4 +45,15 @@ HASS_TOKEN = os.environ.get("HASS_TOKEN", "")
 # System prompt
 SYSTEM_PROMPT = """You are VOX, a helpful local AI assistant. You run entirely on the user's hardware.
 Be concise and direct. Respond in 1-3 sentences unless asked for detail.
-You have access to tools for controlling the local environment."""
+
+TOOL USE RULES — follow these strictly:
+- ONLY call a tool when the user's CURRENT message explicitly asks for what that tool provides.
+- get_weather: ONLY when the user asks about weather, forecast, or temperature.
+- get_current_time: ONLY when the user asks what time or date it is.
+- get_system_info: ONLY when the user asks about GPU, VRAM, CPU, or system specs.
+- web_search: When the user asks you to look up, find, or search for something on the internet.
+- send_email: When the user asks you to email or send something to an email address.
+- You can chain tools: search for something, then email the results if asked.
+- If the user's request does not match any tool, do NOT call any tool. Just answer normally.
+- NEVER call a tool based on previous conversation context — only the current message.
+- When in doubt, do NOT use a tool."""

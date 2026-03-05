@@ -9,12 +9,11 @@ the tool result into the rest of its response. Zero dead air.
 from __future__ import annotations
 
 import concurrent.futures
-from threading import Thread
 
 import ollama
 
 from vox.config import OLLAMA_HOST, OLLAMA_MODEL, SYSTEM_PROMPT
-from vox.tools import TOOL_DEFINITIONS, DetectedIntent, detect_intent, execute_tool
+from vox.tools import TOOL_DEFINITIONS, DetectedIntent, detect_intent, execute_tool, validate_tool_call
 
 # Conversation history
 _history: list[dict] = []
@@ -121,48 +120,69 @@ def _chat_with_concurrent_tool(
 
 
 def _chat_standard(model: str, on_chunk: callable | None) -> str:
-    """Standard chat — no concurrent tools. Still streams for fast TTS."""
+    """Standard chat — no concurrent tools. Supports multi-step tool chains."""
     client = _get_client()
+    current_msg = _history[-1]["content"] if _history else ""
+    max_tool_rounds = 3  # prevent infinite tool loops
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *_history]
+    for round_num in range(max_tool_rounds):
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *_history]
 
-    # First try with tools — LLM might want to call one
-    response = client.chat(
-        model=model,
-        messages=messages,
-        tools=TOOL_DEFINITIONS if TOOL_DEFINITIONS else None,
-    )
+        response = client.chat(
+            model=model,
+            messages=messages,
+            tools=TOOL_DEFINITIONS if TOOL_DEFINITIONS else None,
+        )
 
-    msg = response["message"]
+        msg = response["message"]
 
-    # Handle LLM-initiated tool calls (fallback path)
-    if msg.get("tool_calls"):
+        if not msg.get("tool_calls"):
+            break  # No tool calls — we have our final response
+
+        # Execute validated tool calls
+        any_executed = False
         for tool_call in msg["tool_calls"]:
             fn_name = tool_call["function"]["name"]
             fn_args = tool_call["function"]["arguments"]
+
+            if not validate_tool_call(fn_name, current_msg):
+                print(f"[LLM] BLOCKED spurious tool call: {fn_name}({fn_args}) — not relevant to user message")
+                continue
+
             print(f"[LLM] Tool call: {fn_name}({fn_args})")
             result = execute_tool(fn_name, fn_args)
             _history.append({"role": "tool", "content": str(result)})
+            any_executed = True
 
-        # Get final response with tool results — stream it
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *_history]
-        full_response = ""
-        stream = client.chat(model=model, messages=messages, stream=True)
-        for chunk in stream:
-            token = chunk["message"].get("content", "")
-            if token:
-                full_response += token
-                if on_chunk:
-                    on_chunk(token)
-        print(f"[LLM] Response: {full_response}")
-        return full_response
+        if not any_executed:
+            # All tool calls were blocked — retry without tools
+            print("[LLM] All tool calls blocked, responding without tools...")
+            response = client.chat(model=model, messages=messages, tools=None)
+            msg = response["message"]
+            break
 
-    # No tool calls — just return the response
+        # Loop back — LLM might want to call another tool (e.g., search then email)
+
+    # Stream the final response
     reply = msg.get("content", "")
-    if on_chunk:
-        on_chunk(reply)
-    print(f"[LLM] Response: {reply}")
-    return reply
+    if reply:
+        if on_chunk:
+            on_chunk(reply)
+        print(f"[LLM] Response: {reply}")
+        return reply
+
+    # If LLM returned empty content with tool calls, get a streamed final answer
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *_history]
+    full_response = ""
+    stream = client.chat(model=model, messages=messages, stream=True)
+    for chunk in stream:
+        token = chunk["message"].get("content", "")
+        if token:
+            full_response += token
+            if on_chunk:
+                on_chunk(token)
+    print(f"[LLM] Response: {full_response}")
+    return full_response
 
 
 def clear_history() -> None:
