@@ -81,10 +81,13 @@ def _build_persona_prompt(text: str) -> str:
         r"^(selfie|selfy|pic|picture|photo|image|snap|shot|portrait)\s*(of\s+)?(you|yourself)?\s*",
         "", scene.strip(), flags=re.IGNORECASE,
     )
-    # Strip question phrases
+    # Strip question phrases and LLM-injected meta-questions
     scene = re.sub(r"^(what\s+do\s+you\s+look\s+like)\s*", "", scene.strip(), flags=re.IGNORECASE)
     scene = re.sub(r"^(show\s+(me\s+)?(yourself|what\s+you\s+look\s+like))\s*", "", scene.strip(), flags=re.IGNORECASE)
     scene = re.sub(r"^(let\s+me\s+see\s+you)\s*", "", scene.strip(), flags=re.IGNORECASE)
+    # Strip LLM-injected meta-questions like "What is your persona" / "What do you look like"
+    scene = re.sub(r"\??\s*what\s+(is|are)\s+(your|my)\s+\w+", "", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"\??\s*what\s+do\s+you\s+look\s+like", "", scene, flags=re.IGNORECASE)
     # Strip "of yourself" / "of you" anywhere
     scene = re.sub(r"\b(of\s+)?(yourself|you)\b", "", scene, flags=re.IGNORECASE)
     # Strip "image of yourself" residue

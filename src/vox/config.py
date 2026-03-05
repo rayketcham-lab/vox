@@ -14,6 +14,11 @@ MODELS_DIR.mkdir(exist_ok=True)
 DOWNLOADS_DIR = PROJECT_ROOT / "downloads"
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
+# HuggingFace cache — redirect to project drive to avoid filling OS drive
+HF_HOME = os.environ.get("HF_HOME", str(PROJECT_ROOT / "models" / "huggingface"))
+os.environ["HF_HOME"] = HF_HOME
+Path(HF_HOME).mkdir(parents=True, exist_ok=True)
+
 # Wake word
 PORCUPINE_ACCESS_KEY = os.environ.get("PORCUPINE_ACCESS_KEY", "")
 WAKE_WORD = "hey vox"
