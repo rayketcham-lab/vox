@@ -284,6 +284,7 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
             image_path = Path(match.group(1))
             generated_images.append(image_path.name)
 
+    # Send generated images inline BEFORE the done message
     for filename in generated_images:
         if ws.client_state == WebSocketState.CONNECTED:
             await ws.send_json({
@@ -292,8 +293,41 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
                 "filename": filename,
             })
 
+    # Strip file paths from response text — the image is shown inline,
+    # no need for the LLM to mention paths (it hallucinates D: paths anyway)
+    clean_response = full_response
+    # Always strip drive-letter paths and filenames from LLM output
+    clean_response = re.sub(
+        r"[A-Z]:\\[\w\\]+\.\w+\b", "", clean_response, flags=re.IGNORECASE,
+    )
+    clean_response = re.sub(
+        r"(?:saved?\s+(?:it\s+)?to|(?:check|find|look)\s+(?:out|at|in)?)\s+\S*[\\/]\S+\.\w+\b",
+        "", clean_response, flags=re.IGNORECASE,
+    )
+    clean_response = re.sub(
+        r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:it\s+)?(?:at|in)?)\s+\S+\.png\b",
+        "", clean_response, flags=re.IGNORECASE,
+    )
+    clean_response = re.sub(
+        r"\bvox_image_\S+\.png\b", "", clean_response, flags=re.IGNORECASE,
+    )
+    clean_response = re.sub(
+        r"\s+for the image\.?", "", clean_response, flags=re.IGNORECASE,
+    )
+    clean_response = re.sub(r"\s{2,}", " ", clean_response).strip()
+
     if ws.client_state == WebSocketState.CONNECTED:
-        await ws.send_json({"type": "done", "text": full_response})
+        await ws.send_json({"type": "done", "text": clean_response})
+
+
+@app.on_event("startup")
+async def _startup():
+    """Load persona card on server startup."""
+    from vox.config import VOX_PERSONA_CARD
+    if VOX_PERSONA_CARD:
+        from vox.persona import load_card
+        load_card(VOX_PERSONA_CARD)
+        log.info("Persona card loaded: %s", VOX_PERSONA_CARD)
 
 
 def start_server(host: str | None = None, port: int | None = None):

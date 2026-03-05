@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+from pathlib import Path
 
 import ollama
 
@@ -137,9 +138,13 @@ def _chat_with_concurrent_tool(
             # Attach generated image file if chaining from generate_image
             if primary.tool_name == "generate_image":
                 import re as _re
-                path_match = _re.search(r"saved to (.+)$", tool_result)
+                from vox.config import DOWNLOADS_DIR
+                path_match = _re.search(r"saved to (.+\.png)", tool_result)
                 if path_match:
-                    args["attachments"] = [path_match.group(1)]
+                    fname = path_match.group(1)
+                    # Resolve to full path if only filename
+                    fpath = Path(fname) if Path(fname).is_absolute() else DOWNLOADS_DIR / fname
+                    args["attachments"] = [str(fpath)]
                     args["body"] = "Here's the image you requested."
 
         log.info("Chained tool: %s args=%s", chained_intent.tool_name, {k: v for k, v in args.items() if k != "body"})

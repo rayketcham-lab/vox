@@ -891,7 +891,7 @@ def _web_fetch(url: str = "", **kwargs) -> str:
             filepath = DOWNLOADS_DIR / filename
             filepath.write_bytes(data)
             size_kb = len(data) / 1024
-            return f"PDF saved to {filepath} ({size_kb:.1f} KB)"
+            return f"PDF saved to {filename} ({size_kb:.1f} KB)"
         else:
             # HTML or other text — strip tags and return text
             text = data.decode("utf-8", errors="replace")
@@ -1056,7 +1056,7 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         image.save(filepath)
         log.info("Image saved to %s", filepath)
 
-        return f"Image generated and saved to {filepath}"
+        return f"Image generated and saved to {filename}"
 
     except ImportError:
         log.error("generate_image: diffusers not installed")
