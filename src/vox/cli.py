@@ -2,12 +2,15 @@
 
 import argparse
 
+from vox import __version__
+
 
 def main():
     parser = argparse.ArgumentParser(
         prog="vox",
         description="VOX — Voice Operated eXecutive. Local AI voice assistant.",
     )
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--list-devices", action="store_true", help="List available audio devices and exit")
     parser.add_argument("--no-wake", action="store_true", help="Skip wake word, listen immediately")
     parser.add_argument("--text", action="store_true", help="Text-only mode (no microphone/speaker)")
