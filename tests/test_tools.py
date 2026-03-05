@@ -2,7 +2,7 @@
 
 import pytest
 
-from vox.tools import detect_intent, execute_tool, validate_tool_call
+from vox.tools import detect_all_intents, detect_intent, execute_tool, validate_tool_call
 
 
 # ---------------------------------------------------------------------------
@@ -188,3 +188,61 @@ def test_combined_search_and_email_detects_search_first():
     # Query should NOT include the email tail
     assert "@" not in query, f"Email leaked into query: '{query}'"
     assert len(query) > 5
+
+
+# ---------------------------------------------------------------------------
+# Multi-intent detection (tool chaining)
+# ---------------------------------------------------------------------------
+
+def test_detect_all_intents_search_and_email():
+    """Should detect both web_search and send_email in a combined request."""
+    text = "find me schematics for a Chevy Tahoe and email them to ray@test.com"
+    intents = detect_all_intents(text)
+    assert len(intents) == 2
+    assert intents[0].tool_name == "web_search"
+    assert intents[1].tool_name == "send_email"
+    assert intents[1].args.get("to") == "ray@test.com"
+    # Search query should not include email tail
+    assert "@" not in intents[0].args.get("query", "")
+
+
+def test_detect_all_intents_single_tool():
+    """Single intent should return a list with one element."""
+    text = "what's the weather today?"
+    intents = detect_all_intents(text)
+    assert len(intents) == 1
+    assert intents[0].tool_name == "get_weather"
+
+
+def test_detect_all_intents_no_match():
+    """Non-tool text should return empty list."""
+    intents = detect_all_intents("tell me about Python programming")
+    assert intents == []
+
+
+def test_detect_all_intents_no_duplicates():
+    """Should not return the same tool twice."""
+    text = "search for pizza recipes and also find me Italian restaurants"
+    intents = detect_all_intents(text)
+    tool_names = [i.tool_name for i in intents]
+    assert tool_names.count("web_search") == 1
+
+
+@pytest.mark.parametrize("text,expected_tools", [
+    (
+        "look up RTX 4090 specs and email them to ray@test.com",
+        ["web_search", "send_email"],
+    ),
+    (
+        "search for wiring diagrams and email me at test@example.com",
+        ["web_search", "send_email"],
+    ),
+    (
+        "what's the weather and what time is it?",
+        ["get_weather", "get_current_time"],
+    ),
+])
+def test_detect_all_intents_chaining_cases(text, expected_tools):
+    intents = detect_all_intents(text)
+    tool_names = [i.tool_name for i in intents]
+    assert tool_names == expected_tools

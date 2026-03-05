@@ -13,7 +13,13 @@ import concurrent.futures
 import ollama
 
 from vox.config import OLLAMA_HOST, OLLAMA_MODEL, SYSTEM_PROMPT
-from vox.tools import TOOL_DEFINITIONS, DetectedIntent, detect_intent, execute_tool, validate_tool_call
+from vox.tools import (
+    TOOL_DEFINITIONS,
+    DetectedIntent,
+    detect_all_intents,
+    execute_tool,
+    validate_tool_call,
+)
 
 # Conversation history
 _history: list[dict] = []
@@ -48,10 +54,10 @@ def chat(
         _history.pop(0)
 
     # Fast intent detection (~1ms, regex-based)
-    intent = detect_intent(user_message)
+    intents = detect_all_intents(user_message)
 
-    if intent is not None:
-        response = _chat_with_concurrent_tool(model, intent, on_chunk)
+    if intents:
+        response = _chat_with_concurrent_tool(model, intents, on_chunk)
     else:
         response = _chat_standard(model, on_chunk)
 
@@ -61,45 +67,72 @@ def chat(
 
 def _chat_with_concurrent_tool(
     model: str,
-    intent: DetectedIntent,
+    intents: list[DetectedIntent],
     on_chunk: callable | None,
 ) -> str:
-    """Fire tool call in background, stream LLM bridge phrase, then merge results.
+    """Fire tool calls and stream LLM synthesis. Supports chaining multiple tools.
 
-    Timeline:
+    Single tool timeline:
       t=0ms   → Tool API call starts in background thread
       t=0ms   → LLM starts streaming bridge phrase to TTS
       t=200ms → User hears VOX start talking
       t=500ms → Tool result arrives (weather, time, etc.)
       t=600ms → LLM gets tool result, continues streaming with real data
+
+    Chained tools (e.g., search + email):
+      First tool runs concurrently with bridge phrase, then subsequent tools
+      run sequentially using the previous tool's result as context.
     """
     client = _get_client()
+    primary = intents[0]
+    chained = intents[1:]
 
-    # 1. Fire tool in background thread
+    # 1. Fire primary tool in background thread
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        tool_future = executor.submit(execute_tool, intent.tool_name, intent.args)
+        tool_future = executor.submit(execute_tool, primary.tool_name, primary.args)
 
         # 2. Stream the bridge phrase immediately via on_chunk
         if on_chunk:
-            on_chunk(intent.bridge_phrase + " ")
-        print(f"[LLM] Bridge: {intent.bridge_phrase}")
-        print(f"[LLM] Tool '{intent.tool_name}' running concurrently...")
+            on_chunk(primary.bridge_phrase + " ")
+        print(f"[LLM] Bridge: {primary.bridge_phrase}")
+        print(f"[LLM] Tool '{primary.tool_name}' running concurrently...")
 
         # 3. Wait for tool result (usually <1s for API calls)
         tool_result = tool_future.result(timeout=10)
         print(f"[LLM] Tool result: {tool_result[:100]}...")
 
-    # 4. Now ask the LLM to synthesize a natural response with the real data
-    _history.append({"role": "assistant", "content": intent.bridge_phrase})
-    _history.append({"role": "tool", "content": tool_result})
+    # 4. Run chained tools sequentially (e.g., email the search results)
+    chained_results = []
+    for chained_intent in chained:
+        # Enrich chained tool args with context from the primary result
+        args = dict(chained_intent.args)
+        if chained_intent.tool_name == "send_email":
+            if not args.get("subject"):
+                args["subject"] = f"VOX: {primary.args.get('query', 'Results')}"
+            if not args.get("body"):
+                args["body"] = tool_result
 
-    # Use role: "user" for the synthesis instruction — many smaller models
-    # ignore trailing system messages but always respond to user messages.
+        print(f"[LLM] Chained tool: {chained_intent.tool_name}({args})")
+        chained_result = execute_tool(chained_intent.tool_name, args)
+        chained_results.append((chained_intent.tool_name, chained_result))
+        print(f"[LLM] Chained result: {chained_result[:100]}...")
+
+    # 5. Build history with all tool results
+    _history.append({"role": "assistant", "content": primary.bridge_phrase})
+    _history.append({"role": "tool", "content": tool_result})
+    for tool_name, result in chained_results:
+        _history.append({"role": "tool", "content": result})
+
+    # 6. Ask the LLM to synthesize a natural response with all tool data
+    all_results = f"Primary tool ({primary.tool_name}):\n{tool_result}"
+    for tool_name, result in chained_results:
+        all_results += f"\n\nChained tool ({tool_name}):\n{result}"
+
     synthesis_msg = (
         f"[SYSTEM INSTRUCTION — do not read this aloud]\n"
-        f"The tool returned this data:\n{tool_result}\n\n"
+        f"The tools returned this data:\n{all_results}\n\n"
         f"Now respond to the user's original question using the data above. "
-        f"Do NOT say \"{intent.bridge_phrase}\" again — you already said that. "
+        f"Do NOT say \"{primary.bridge_phrase}\" again — you already said that. "
         f"Just give the answer naturally. Be concise — 1-3 sentences."
     )
 
@@ -110,7 +143,7 @@ def _chat_with_concurrent_tool(
     ]
 
     # Stream the synthesis
-    full_response = intent.bridge_phrase + " "
+    full_response = primary.bridge_phrase + " "
     stream = client.chat(model=model, messages=messages, stream=True)
     for chunk in stream:
         token = chunk["message"].get("content", "")
@@ -120,9 +153,9 @@ def _chat_with_concurrent_tool(
                 on_chunk(token)
 
     # If synthesis returned nothing, just format the tool result directly
-    if full_response.strip() == intent.bridge_phrase.strip():
+    if full_response.strip() == primary.bridge_phrase.strip():
         print("[LLM] Synthesis empty — using tool result directly")
-        full_response = intent.bridge_phrase + " " + tool_result.split("\n")[0]
+        full_response = primary.bridge_phrase + " " + tool_result.split("\n")[0]
         if on_chunk:
             on_chunk(tool_result.split("\n")[0])
 

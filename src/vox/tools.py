@@ -94,6 +94,24 @@ def detect_intent(text: str) -> DetectedIntent | None:
     return None
 
 
+def detect_all_intents(text: str) -> list[DetectedIntent]:
+    """Detect ALL matching intents in the text (for tool chaining)."""
+    intents = []
+    seen = set()
+    for pattern, tool_name, arg_builder, bridge in _INTENT_PATTERNS:
+        if tool_name in seen:
+            continue
+        match = pattern.search(text)
+        if match:
+            intents.append(DetectedIntent(
+                tool_name=tool_name,
+                args=arg_builder(match, text),
+                bridge_phrase=bridge,
+            ))
+            seen.add(tool_name)
+    return intents
+
+
 # Validation patterns — stricter than intent detection.
 # Used to block spurious LLM-initiated tool calls that don't match the user's actual request.
 _TOOL_VALIDATORS: dict[str, re.Pattern] = {
