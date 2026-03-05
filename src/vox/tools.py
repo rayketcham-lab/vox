@@ -88,7 +88,7 @@ def _build_persona_prompt(text: str) -> str:
         r"\b(strip|undress|naked|nude)\b", "nude", scene, flags=re.IGNORECASE,
     )
     # Mood/style descriptors → SD-friendly terms
-    scene = re.sub(r"\b(racy|risque|risqué)\b", "seductive, revealing outfit, cleavage", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"\b(racy|racey|risque|risqué|naughty|spicy)\b", "seductive, revealing outfit, cleavage", scene, flags=re.IGNORECASE)
     scene = re.sub(r"\b(sexy|hot|sultry)\b", "seductive, alluring pose, bedroom eyes", scene, flags=re.IGNORECASE)
     # "and show me a selfie" / "another selfie" → just remove, we already know it's a selfie
     scene = re.sub(
@@ -103,6 +103,8 @@ def _build_persona_prompt(text: str) -> str:
     scene = re.sub(r"\bsurprise\s+me\s+with\s+(something\s+)?", "", scene, flags=re.IGNORECASE)
 
     # Strip conversational fluff and compliments
+    scene = re.sub(r"\b(that'?s|thats)\s+(a\s+)?(little|bit|kinda|pretty|really|so|very)\s+", "", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"\b(now|ok|okay|alright|hey|well)\s+", "", scene.strip(), flags=re.IGNORECASE)
     scene = re.sub(r"^.*?\b(can\s+(i|you)|could\s+(i|you)|i\s+(want|need|like|love|would))\b", "", scene, flags=re.IGNORECASE)
     scene = re.sub(r"^.*?\b(have\s+a|get\s+a|see\s+a|give\s+me)\b", "", scene, flags=re.IGNORECASE)
     # Strip common prefixes
