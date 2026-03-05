@@ -57,13 +57,21 @@ IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "1024"))
 IMAGE_NEGATIVE_PROMPT = os.environ.get(
     "IMAGE_NEGATIVE_PROMPT",
     "deformed, bad anatomy, extra limbs, mutated hands, poorly drawn face, "
-    "blurry, low quality, watermark, text, signature, cropped",
+    "blurry, low quality, watermark, text, signature, cropped, "
+    "cgi, 3d render, cartoon, anime, illustration, painting, drawing, "
+    "airbrushed, plastic skin, smooth skin, doll-like, overly perfect, "
+    "symmetrical face, uncanny valley",
 )
 
 # Persona (optional — gives VOX a visual identity for selfie generation)
 VOX_PERSONA_NAME = os.environ.get("VOX_PERSONA_NAME", "")
 VOX_PERSONA_DESCRIPTION = os.environ.get("VOX_PERSONA_DESCRIPTION", "")
-VOX_PERSONA_STYLE = os.environ.get("VOX_PERSONA_STYLE", "photorealistic, natural lighting, high detail, 8k")
+VOX_PERSONA_STYLE = os.environ.get(
+    "VOX_PERSONA_STYLE",
+    "photorealistic, shot on Canon EOS R5 85mm f/1.4, natural lighting, "
+    "shallow depth of field, visible skin pores, freckles, beauty marks, "
+    "natural skin texture, film grain, candid pose, raw photo, 8k",
+)
 
 # Web UI
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")  # noqa: S104 — intentional LAN binding
