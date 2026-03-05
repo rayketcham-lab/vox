@@ -227,6 +227,10 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
             except Exception:
                 log.exception("Failed to save uploaded image")
 
+    # Send uploaded image URLs back for confirmation
+    if uploaded_paths and ws.client_state == WebSocketState.CONNECTED:
+        await ws.send_json({"type": "uploaded_images", "urls": uploaded_paths})
+
     def run_chat() -> str:
         session_history = _sessions[session_id]
         _history.clear()

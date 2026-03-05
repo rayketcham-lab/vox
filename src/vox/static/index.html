@@ -42,7 +42,7 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
-/* ── Header ── */
+/* -- Header -- */
 .header {
   position: fixed;
   top: 0;
@@ -89,7 +89,7 @@ html, body {
   line-height: 1;
 }
 
-/* ── Menu ── */
+/* -- Menu -- */
 .menu-overlay {
   position: fixed;
   inset: 0;
@@ -143,7 +143,7 @@ html, body {
   background: rgba(108,99,255,0.15);
 }
 
-/* ── Chat ── */
+/* -- Chat -- */
 .chat-container {
   position: fixed;
   top: var(--header-h);
@@ -210,7 +210,34 @@ html, body {
   display: block;
 }
 
-/* ── Typing indicator ── */
+.bubble .chat-image {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: 8px;
+  margin-top: 6px;
+  cursor: pointer;
+  display: block;
+  object-fit: contain;
+  background: rgba(0,0,0,0.2);
+}
+
+.bubble .chat-image.loading {
+  min-width: 200px;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bubble .upload-thumb {
+  max-width: 200px;
+  border-radius: 8px;
+  margin-top: 6px;
+  display: block;
+  cursor: pointer;
+}
+
+/* -- Typing indicator -- */
 .typing-indicator {
   display: none;
   justify-content: flex-start;
@@ -247,7 +274,7 @@ html, body {
   30% { transform: translateY(-6px); }
 }
 
-/* ── Toast ── */
+/* -- Toast -- */
 .toast {
   position: fixed;
   top: calc(var(--header-h) + 12px);
@@ -268,7 +295,7 @@ html, body {
   transform: translateX(-50%) translateY(0);
 }
 
-/* ── Footer / Input ── */
+/* -- Footer / Input -- */
 .footer {
   position: fixed;
   bottom: 0;
@@ -408,7 +435,7 @@ html, body {
   line-height: 1;
 }
 
-/* ── Lightbox ── */
+/* -- Lightbox -- */
 .lightbox {
   position: fixed;
   inset: 0;
@@ -450,7 +477,7 @@ html, body {
   justify-content: center;
 }
 
-/* ── Gallery ── */
+/* -- Gallery -- */
 .gallery-container {
   position: fixed;
   top: var(--header-h);
@@ -544,7 +571,7 @@ html, body {
   padding: 40px 0;
 }
 
-/* ── Desktop ── */
+/* -- Desktop -- */
 @media (min-width: 720px) {
   .chat-container, .gallery-container {
     max-width: 720px;
@@ -628,7 +655,7 @@ html, body {
 (function() {
   "use strict";
 
-  // ── DOM refs ──
+  // -- DOM refs --
   var chatContainer = document.getElementById("chatContainer");
   var typingIndicator = document.getElementById("typingIndicator");
   var msgInput = document.getElementById("msgInput");
@@ -652,7 +679,7 @@ html, body {
   var uploadBtn = document.getElementById("uploadBtn");
   var imagePreviewStrip = document.getElementById("imagePreviewStrip");
 
-  // ── State ──
+  // -- State --
   var ws = null;
   var sessionId = null;
   var processing = false;
@@ -662,7 +689,7 @@ html, body {
   var toastTimer = null;
   var pendingImages = []; // base64 strings ready to send
 
-  // ── Helpers ──
+  // -- Helpers --
   function clearChildren(el) {
     while (el.firstChild) {
       el.removeChild(el.firstChild);
@@ -676,7 +703,7 @@ html, body {
     return div;
   }
 
-  // ── WebSocket ──
+  // -- WebSocket --
   function connect() {
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(proto + "//" + location.host + "/ws/chat");
@@ -727,12 +754,26 @@ html, body {
         if (!currentVoxBubble) {
           currentVoxBubble = addBubble("vox", "");
         }
+        // Add cache-busted image to the bubble
         var img = document.createElement("img");
-        img.src = msg.url;
-        img.alt = msg.filename || "Image";
+        img.className = "chat-image";
+        img.src = msg.url + "?t=" + Date.now();
+        img.alt = msg.filename || "Generated image";
         img.addEventListener("click", function() { openLightbox(msg.url); });
+        img.addEventListener("error", function() {
+          // Retry once after a short delay (image may still be writing to disk)
+          var self = this;
+          setTimeout(function() {
+            self.src = msg.url + "?t=" + Date.now();
+          }, 1000);
+        });
         currentVoxBubble.appendChild(img);
         scrollToBottom();
+        break;
+
+      case "uploaded_images":
+        // Server confirms uploaded images with their URLs — nothing to do,
+        // user bubble already shows them from the local data URLs
         break;
 
       case "done":
@@ -744,10 +785,15 @@ html, body {
       case "busy":
         showToast("VOX is still processing...");
         break;
+
+      case "training_status":
+        showToast("Training images: " + (msg.image_count || 0) +
+          " | " + (msg.recommendation || ""));
+        break;
     }
   }
 
-  // ── Chat bubbles ──
+  // -- Chat bubbles --
   function addBubble(role, text) {
     var wrapper = document.createElement("div");
     wrapper.className = "message " + role;
@@ -760,7 +806,7 @@ html, body {
     return bubble;
   }
 
-  // ── Typing indicator ──
+  // -- Typing indicator --
   function showTyping() {
     typingIndicator.classList.add("visible");
     scrollToBottom();
@@ -770,7 +816,7 @@ html, body {
     typingIndicator.classList.remove("visible");
   }
 
-  // ── Processing state ──
+  // -- Processing state --
   function setProcessing(state) {
     processing = state;
     msgInput.disabled = state;
@@ -780,7 +826,7 @@ html, body {
     }
   }
 
-  // ── Image upload ──
+  // -- Image upload --
   uploadBtn.addEventListener("click", function() {
     fileInput.click();
   });
@@ -792,7 +838,7 @@ html, body {
       (function(file) {
         var reader = new FileReader();
         reader.onload = function(e) {
-          pendingImages.push(e.target.result); // data:image/...;base64,...
+          pendingImages.push(e.target.result);
           updatePreviewStrip();
         };
         reader.readAsDataURL(file);
@@ -831,22 +877,19 @@ html, body {
     });
   }
 
-  // ── Send message ──
+  // -- Send message --
   function send() {
     var text = msgInput.value.trim();
     if ((!text && pendingImages.length === 0) || processing) return;
 
-    // Show user bubble — with uploaded image thumbnails if any
+    // Show user bubble with text and uploaded image thumbnails
     var userBubble = addBubble("user", text);
     if (pendingImages.length > 0) {
       pendingImages.forEach(function(dataUrl) {
         var img = document.createElement("img");
+        img.className = "upload-thumb";
         img.src = dataUrl;
         img.alt = "Uploaded image";
-        img.style.maxWidth = "200px";
-        img.style.borderRadius = "8px";
-        img.style.marginTop = "6px";
-        img.style.display = "block";
         img.addEventListener("click", function() { openLightbox(dataUrl); });
         userBubble.appendChild(img);
       });
@@ -859,7 +902,7 @@ html, body {
 
     var msg = { type: "message", text: text || "What's in this image?" };
     if (pendingImages.length > 0) {
-      msg.images = pendingImages.slice(); // copy
+      msg.images = pendingImages.slice();
     }
 
     var payload = JSON.stringify(msg);
@@ -882,35 +925,34 @@ html, body {
     }
   });
 
-  // ── Auto-resize textarea ──
+  // -- Auto-resize textarea --
   function autoResize() {
     msgInput.style.height = "auto";
     msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + "px";
-    // Adjust chat container when preview strip is visible
     var extra = imagePreviewStrip.classList.contains("visible") ? 76 : 0;
     chatContainer.style.bottom = "calc(var(--footer-h) + " + extra + "px)";
   }
 
   msgInput.addEventListener("input", autoResize);
 
-  // ── Scroll ──
+  // -- Scroll --
   function scrollToBottom() {
     requestAnimationFrame(function() {
       chatContainer.scrollTop = chatContainer.scrollHeight;
     });
   }
 
-  // ── Toast ──
+  // -- Toast --
   function showToast(text) {
     toast.textContent = text;
     toast.classList.add("visible");
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(function() {
       toast.classList.remove("visible");
-    }, 2500);
+    }, 3000);
   }
 
-  // ── Menu ──
+  // -- Menu --
   menuBtn.addEventListener("click", function() {
     menuOverlay.classList.add("open");
   });
@@ -944,7 +986,7 @@ html, body {
     showToast("VOX -- Voice Operated eXecutive");
   });
 
-  // ── Gallery ──
+  // -- Gallery --
   function showGallery() {
     chatContainer.classList.add("hidden");
     footer.classList.add("hidden");
@@ -1010,7 +1052,7 @@ html, body {
 
   galleryBack.addEventListener("click", hideGallery);
 
-  // ── Lightbox ──
+  // -- Lightbox --
   function openLightbox(src) {
     lightboxImg.src = src;
     lightbox.classList.add("open");
@@ -1033,7 +1075,7 @@ html, body {
     }
   });
 
-  // ── Paste image support ──
+  // -- Paste image support --
   document.addEventListener("paste", function(e) {
     var items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
@@ -1051,7 +1093,7 @@ html, body {
     }
   });
 
-  // ── Drag-and-drop image support ──
+  // -- Drag-and-drop image support --
   chatContainer.addEventListener("dragover", function(e) {
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
@@ -1073,7 +1115,7 @@ html, body {
     }
   });
 
-  // ── Init ──
+  // -- Init --
   connect();
   msgInput.focus();
 })();
