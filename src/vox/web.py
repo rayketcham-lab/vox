@@ -256,14 +256,26 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
 
     task = asyncio.get_running_loop().run_in_executor(None, run_chat)
 
-    # Stream chunks as they arrive
+    # Stream chunks as they arrive — buffer to strip drive-letter paths
+    _chunk_buffer = ""
     try:
         while True:
             chunk = await queue.get()
             if chunk is _SENTINEL:
+                # Flush remaining buffer
+                if _chunk_buffer and ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_json({"type": "chunk", "text": _chunk_buffer})
                 break
-            if ws.client_state == WebSocketState.CONNECTED:
-                await ws.send_json({"type": "chunk", "text": chunk})
+            _chunk_buffer += chunk
+            # Buffer until we have enough to detect/strip paths (drive letters need context)
+            if len(_chunk_buffer) > 80 or chunk.endswith((".", "!", "?", "\n")):
+                cleaned = re.sub(r"[A-Z]:\\[\w\\]+\.\w+", "", _chunk_buffer)
+                cleaned = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\bvox_image_\S+\.png\b", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s{2,}", " ", cleaned)
+                if cleaned.strip() and ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_json({"type": "chunk", "text": cleaned})
+                _chunk_buffer = ""
     except Exception:
         log.exception("Error streaming chat response")
 

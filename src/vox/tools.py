@@ -87,11 +87,20 @@ def _build_persona_prompt(text: str) -> str:
     scene = re.sub(
         r"\b(strip|undress|naked|nude)\b", "nude", scene, flags=re.IGNORECASE,
     )
-    # "and show me a selfie" → just remove, we already know it's a selfie
+    # Mood/style descriptors → SD-friendly terms
+    scene = re.sub(r"\b(racy|risque|risqué)\b", "seductive, revealing outfit, cleavage", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"\b(sexy|hot|sultry)\b", "seductive, alluring pose, bedroom eyes", scene, flags=re.IGNORECASE)
+    # "and show me a selfie" / "another selfie" → just remove, we already know it's a selfie
     scene = re.sub(
         r"\b(and\s+)?(show|send|give|take)\s+(me\s+)?(a\s+)?(selfie|pic|picture|photo)\b",
         "", scene, flags=re.IGNORECASE,
     )
+    scene = re.sub(
+        r"\b(another|one\s+more|a\s+new)\s+(selfie|pic|picture|photo)\b",
+        "", scene, flags=re.IGNORECASE,
+    )
+    # "surprise me with something" → extract the adjective that follows
+    scene = re.sub(r"\bsurprise\s+me\s+with\s+(something\s+)?", "", scene, flags=re.IGNORECASE)
 
     # Strip conversational fluff and compliments
     scene = re.sub(r"^.*?\b(can\s+(i|you)|could\s+(i|you)|i\s+(want|need|like|love|would))\b", "", scene, flags=re.IGNORECASE)
@@ -104,7 +113,7 @@ def _build_persona_prompt(text: str) -> str:
         "", scene.strip(), flags=re.IGNORECASE,
     )
     scene = re.sub(
-        r"^(selfie|selfy|pic|picture|photo|image|snap|shot|portrait)\s*(of\s+)?(you|yourself)?\s*",
+        r"\b(selfie|selfy|pic|picture|photo|image|snap|shot|portrait)\s*(of\s+)?(you|yourself)?\s*",
         "", scene.strip(), flags=re.IGNORECASE,
     )
     # Strip question phrases and LLM-injected meta-questions
