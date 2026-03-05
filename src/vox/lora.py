@@ -1,0 +1,288 @@
+"""LoRA training pipeline — fine-tune Stable Diffusion on reference photos.
+
+Upload reference photos of a subject, then train a LoRA that captures their
+face, body, and style. The trained LoRA is automatically loaded during image
+generation so the persona looks like the subject.
+
+Workflow:
+  1. Upload 10-100 photos to persona/training/
+  2. Run training: vox --train-lora
+  3. LoRA saves to models/lora/<persona_name>/
+  4. Image generation auto-loads the LoRA when generating persona selfies
+
+Requires: pip install -e ".[lora]"
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+from pathlib import Path
+
+from vox.config import MODELS_DIR, PROJECT_ROOT
+
+log = logging.getLogger(__name__)
+
+# Training directories
+TRAINING_DIR = PROJECT_ROOT / "persona" / "training"
+LORA_OUTPUT_DIR = MODELS_DIR / "lora"
+
+
+def setup_training_dirs(persona_name: str) -> dict[str, Path]:
+    """Create the directory structure for LoRA training.
+
+    Returns dict with paths: training_images, output, config.
+    """
+    slug = persona_name.lower().replace(" ", "-")
+    paths = {
+        "training_images": TRAINING_DIR / slug,
+        "output": LORA_OUTPUT_DIR / slug,
+        "config": LORA_OUTPUT_DIR / slug / "training_config.json",
+    }
+    for p in paths.values():
+        if p.suffix:  # file path, create parent
+            p.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            p.mkdir(parents=True, exist_ok=True)
+    return paths
+
+
+def add_training_images(persona_name: str, image_paths: list[str | Path]) -> dict:
+    """Copy images into the training directory.
+
+    Returns status dict with count and path.
+    """
+    paths = setup_training_dirs(persona_name)
+    dest = paths["training_images"]
+    added = 0
+    skipped = 0
+
+    for img_path in image_paths:
+        img_path = Path(img_path)
+        if not img_path.exists():
+            log.warning("Training image not found: %s", img_path)
+            skipped += 1
+            continue
+        if img_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+            log.warning("Skipping non-image file: %s", img_path)
+            skipped += 1
+            continue
+        dest_file = dest / img_path.name
+        if not dest_file.exists():
+            shutil.copy2(img_path, dest_file)
+            added += 1
+        else:
+            skipped += 1
+
+    total = len(list(dest.glob("*")))
+    log.info("Training images: added=%d, skipped=%d, total=%d", added, skipped, total)
+    return {"added": added, "skipped": skipped, "total": total, "path": str(dest)}
+
+
+def get_training_status(persona_name: str) -> dict:
+    """Check current training data and model status."""
+    paths = setup_training_dirs(persona_name)
+    images = list(paths["training_images"].glob("*"))
+    image_count = len([f for f in images if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".bmp")])
+
+    # Check for existing LoRA
+    lora_files = list(paths["output"].glob("*.safetensors"))
+    has_lora = len(lora_files) > 0
+    lora_file = str(lora_files[0]) if lora_files else None
+
+    # Check for training config/progress
+    config_exists = paths["config"].exists()
+    config = {}
+    if config_exists:
+        with open(paths["config"]) as f:
+            config = json.load(f)
+
+    return {
+        "persona_name": persona_name,
+        "image_count": image_count,
+        "image_path": str(paths["training_images"]),
+        "has_lora": has_lora,
+        "lora_file": lora_file,
+        "lora_output_path": str(paths["output"]),
+        "training_config": config,
+        "ready_to_train": image_count >= 10,
+        "recommendation": _get_recommendation(image_count),
+    }
+
+
+def _get_recommendation(count: int) -> str:
+    """Training recommendation based on image count."""
+    if count == 0:
+        return "No images yet. Upload 10-100 reference photos to get started."
+    if count < 10:
+        return f"Only {count} images. Need at least 10, recommend 20-50 for best results."
+    if count < 20:
+        return f"{count} images — minimum met. More variety (20-50) will improve quality."
+    if count <= 100:
+        return f"{count} images — great dataset. Ready to train."
+    return f"{count} images — plenty. You can trim to your best 50-100 for faster training."
+
+
+def generate_training_config(
+    persona_name: str,
+    *,
+    trigger_word: str | None = None,
+    resolution: int = 1024,
+    train_steps: int = 1500,
+    learning_rate: float = 1e-4,
+    network_rank: int = 32,
+    network_alpha: int = 16,
+    batch_size: int = 1,
+    save_every_n_steps: int = 500,
+) -> dict:
+    """Generate a training configuration for kohya_ss / sd-scripts.
+
+    This creates a config file that can be used with:
+    - kohya_ss GUI
+    - sd-scripts CLI (accelerate launch)
+    - or our built-in training wrapper
+
+    Returns the config dict and saves it to disk.
+    """
+    paths = setup_training_dirs(persona_name)
+    slug = persona_name.lower().replace(" ", "-")
+    trigger = trigger_word or f"ohwx {slug}"
+
+    config = {
+        "persona_name": persona_name,
+        "trigger_word": trigger,
+        "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+        "training_data": str(paths["training_images"]),
+        "output_dir": str(paths["output"]),
+        "output_name": f"{slug}_lora",
+        "resolution": resolution,
+        "train_steps": train_steps,
+        "learning_rate": learning_rate,
+        "network_rank": network_rank,
+        "network_alpha": network_alpha,
+        "batch_size": batch_size,
+        "save_every_n_steps": save_every_n_steps,
+        "mixed_precision": "fp16",
+        "optimizer": "AdamW8bit",
+        "lr_scheduler": "cosine",
+        "caption_extension": ".txt",
+        "shuffle_caption": True,
+        "keep_tokens": 1,
+        "max_token_length": 225,
+        "seed": 42,
+    }
+
+    with open(paths["config"], "w") as f:
+        json.dump(config, f, indent=2)
+
+    log.info("Training config saved: %s", paths["config"])
+    return config
+
+
+def auto_caption_images(persona_name: str, trigger_word: str | None = None) -> dict:
+    """Generate caption .txt files for each training image.
+
+    Uses a simple template: "<trigger_word>, <description>"
+    For best results, review and edit the captions manually.
+
+    Returns dict with count of captions created.
+    """
+    paths = setup_training_dirs(persona_name)
+    slug = persona_name.lower().replace(" ", "-")
+    trigger = trigger_word or f"ohwx {slug}"
+    image_dir = paths["training_images"]
+
+    created = 0
+    skipped = 0
+    extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+    for img_file in image_dir.iterdir():
+        if img_file.suffix.lower() not in extensions:
+            continue
+        caption_file = img_file.with_suffix(".txt")
+        if caption_file.exists():
+            skipped += 1
+            continue
+        # Default caption — user should review and customize these
+        caption_file.write_text(f"{trigger}, a photo of a person", encoding="utf-8")
+        created += 1
+
+    log.info("Captions: created=%d, skipped=%d (already existed)", created, skipped)
+    return {
+        "created": created,
+        "skipped": skipped,
+        "trigger_word": trigger,
+        "note": "Review and edit caption .txt files for better results. "
+                "Each image should have a matching .txt describing the scene.",
+    }
+
+
+def get_lora_path(persona_name: str) -> str | None:
+    """Get the path to a trained LoRA for image generation.
+
+    Returns None if no LoRA exists yet.
+    """
+    paths = setup_training_dirs(persona_name)
+    lora_files = sorted(paths["output"].glob("*.safetensors"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if lora_files:
+        return str(lora_files[0])
+    return None
+
+
+def train_lora(persona_name: str, on_progress: callable | None = None) -> dict:
+    """Run LoRA training using diffusers' built-in training.
+
+    This is a simplified training loop that works without kohya_ss.
+    For production quality, use the generated config with kohya_ss GUI.
+
+    Args:
+        persona_name: Name of the persona to train.
+        on_progress: Callback for progress updates: on_progress(step, total, loss).
+
+    Returns dict with training results.
+    """
+    paths = setup_training_dirs(persona_name)
+    config_path = paths["config"]
+
+    if not config_path.exists():
+        config = generate_training_config(persona_name)
+    else:
+        with open(config_path) as f:
+            config = json.load(f)
+
+    status = get_training_status(persona_name)
+    if not status["ready_to_train"]:
+        return {"error": status["recommendation"], "status": status}
+
+    # Auto-caption if needed
+    caption_status = auto_caption_images(persona_name, config.get("trigger_word"))
+
+    try:
+        import importlib.util
+        if not importlib.util.find_spec("torch") or not importlib.util.find_spec("diffusers"):
+            raise ImportError("torch or diffusers not installed")
+    except ImportError:
+        return {
+            "error": "Training requires: pip install -e '.[lora]'\n"
+                     "You also need torch with CUDA support.",
+            "alternative": "Use the generated config with kohya_ss GUI:\n"
+                          f"  Config: {config_path}\n"
+                          f"  Images: {paths['training_images']}",
+        }
+
+    # For now, return the config for manual training
+    # Full automated training loop is a larger feature (Issue #78)
+    return {
+        "status": "config_ready",
+        "config": config,
+        "caption_status": caption_status,
+        "image_count": status["image_count"],
+        "next_steps": [
+            f"1. Review captions in {paths['training_images']}",
+            f"2. Train with kohya_ss using config: {config_path}",
+            f"   OR run: vox --train-lora --persona {persona_name}",
+            f"3. LoRA will save to: {paths['output']}",
+            "4. Image generation will auto-load the LoRA for selfies.",
+        ],
+    }

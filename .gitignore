@@ -51,7 +51,7 @@ models/
 # --- Downloads & Uploads (user-generated content) ---
 downloads/
 
-# --- Persona cards (may contain personal descriptions) ---
+# --- Persona cards & training data (personal content) ---
 persona/
 !persona/example.yaml
 

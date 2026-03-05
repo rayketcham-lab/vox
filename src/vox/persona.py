@@ -46,23 +46,30 @@ def get_card() -> dict | None:
     return _card
 
 
-def _get_time_period() -> str:
-    """Get current time period for mood selection."""
+def _get_time_period(card: dict | None = None) -> str:
+    """Get current time period for mood selection.
+
+    Uses card's schedule.hours if defined, otherwise defaults.
+    """
     hour = datetime.now().hour
-    if 5 <= hour < 11:
-        return "morning"
-    elif 11 <= hour < 17:
-        return "afternoon"
-    elif 17 <= hour < 22:
-        return "evening"
-    else:
-        return "night"
+    schedule = (card or {}).get("schedule", {}).get("hours", {})
+    # Parse custom ranges like "morning: [8, 10]" or use defaults
+    ranges = {
+        "morning": schedule.get("morning", [5, 11]),
+        "afternoon": schedule.get("afternoon", [11, 17]),
+        "evening": schedule.get("evening", [17, 22]),
+        "night": None,  # fallback
+    }
+    for period, span in ranges.items():
+        if span and span[0] <= hour < span[1]:
+            return period
+    return "night"
 
 
 def _get_mood_block(card: dict) -> str:
     """Build mood context from the card's time-aware moods."""
     moods = card.get("moods", {})
-    period = _get_time_period()
+    period = _get_time_period(card)
     mood = moods.get(period, {})
     if not mood:
         return ""

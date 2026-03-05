@@ -59,6 +59,55 @@ async def delete_image(filename: str):
     return {"deleted": filename}
 
 
+# --- LoRA Training Endpoints ---
+
+
+@app.get("/api/lora/status")
+async def lora_status():
+    """Get LoRA training status for the current persona."""
+    from vox.config import VOX_PERSONA_NAME
+    from vox.lora import get_training_status
+    from vox.persona import get_card
+
+    card = get_card()
+    name = card["name"] if card else VOX_PERSONA_NAME or "vox"
+    return get_training_status(name)
+
+
+@app.post("/api/lora/upload")
+async def lora_upload_images():
+    """Upload training images via multipart form."""
+    # WebSocket handles uploads — see _handle_training_upload
+    return JSONResponse(
+        {"error": "Use WebSocket upload — send type: 'training_image' with base64 data"},
+        status_code=501,
+    )
+
+
+@app.post("/api/lora/caption")
+async def lora_auto_caption():
+    """Auto-generate captions for training images."""
+    from vox.config import VOX_PERSONA_NAME
+    from vox.lora import auto_caption_images
+    from vox.persona import get_card
+
+    card = get_card()
+    name = card["name"] if card else VOX_PERSONA_NAME or "vox"
+    return auto_caption_images(name)
+
+
+@app.get("/api/lora/config")
+async def lora_get_config():
+    """Generate/get training config."""
+    from vox.config import VOX_PERSONA_NAME
+    from vox.lora import generate_training_config
+    from vox.persona import get_card
+
+    card = get_card()
+    name = card["name"] if card else VOX_PERSONA_NAME or "vox"
+    return generate_training_config(name)
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(ws: WebSocket):
     await ws.accept()
@@ -73,6 +122,12 @@ async def websocket_chat(ws: WebSocket):
     try:
         while True:
             data = await ws.receive_json()
+
+            # Handle training image uploads
+            if data.get("type") == "training_image":
+                await _handle_training_upload(ws, data)
+                continue
+
             if data.get("type") != "message":
                 continue
 
@@ -107,6 +162,41 @@ def _find_generated_images(history: list[dict], before_len: int) -> list[str]:
                 image_path = Path(match.group(1))
                 filenames.append(image_path.name)
     return filenames
+
+
+async def _handle_training_upload(ws: WebSocket, data: dict):
+    """Handle training image upload via WebSocket."""
+    from vox.config import VOX_PERSONA_NAME
+    from vox.lora import get_training_status, setup_training_dirs
+    from vox.persona import get_card
+
+    card = get_card()
+    name = card["name"] if card else VOX_PERSONA_NAME or "vox"
+
+    images_b64 = data.get("images", [])
+    if not images_b64:
+        await ws.send_json({"type": "training_status", "error": "No images provided"})
+        return
+
+    paths = setup_training_dirs(name)
+    saved_paths = []
+    for i, img_b64 in enumerate(images_b64):
+        if "," in img_b64:
+            img_b64 = img_b64.split(",", 1)[1]
+        try:
+            img_bytes = base64.b64decode(img_b64)
+            import datetime as _dt
+            ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = f"ref_{ts}_{i}.png"
+            fpath = paths["training_images"] / fname
+            fpath.write_bytes(img_bytes)
+            saved_paths.append(str(fpath))
+            log.info("Saved training image: %s (%d bytes)", fpath, len(img_bytes))
+        except Exception:
+            log.exception("Failed to save training image")
+
+    status = get_training_status(name)
+    await ws.send_json({"type": "training_status", **status})
 
 
 async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_images: list[str] | None = None):

@@ -30,6 +30,15 @@ image = [
     "safetensors",
     "Pillow",
 ]
+lora = [
+    "diffusers>=0.26.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
+    "safetensors",
+    "Pillow",
+    "peft>=0.7.0",
+    "bitsandbytes>=0.41.0",
+]
 web = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -40,7 +49,7 @@ dev = [
     "pre-commit>=3.0.0",
 ]
 all = [
-    "vox[xtts,piper,image,web,dev]",
+    "vox[xtts,piper,image,lora,web,dev]",
 ]
 
 [project.scripts]
