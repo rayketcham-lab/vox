@@ -120,9 +120,16 @@ def _chat_with_concurrent_tool(
         args = dict(chained_intent.args)
         if chained_intent.tool_name == "send_email":
             if not args.get("subject"):
-                args["subject"] = f"VOX: {primary.args.get('query', 'Results')}"
+                args["subject"] = f"VOX: {primary.args.get('query', primary.args.get('prompt', 'Results'))}"
             if not args.get("body"):
                 args["body"] = tool_result
+            # Attach generated image file if chaining from generate_image
+            if primary.tool_name == "generate_image":
+                import re as _re
+                path_match = _re.search(r"saved to (.+)$", tool_result)
+                if path_match:
+                    args["attachments"] = [path_match.group(1)]
+                    args["body"] = "Here's the image you requested."
 
         log.info("Chained tool: %s args=%s", chained_intent.tool_name, {k: v for k, v in args.items() if k != "body"})
         chained_result = execute_tool(chained_intent.tool_name, args)

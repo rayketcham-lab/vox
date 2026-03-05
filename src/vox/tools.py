@@ -32,9 +32,12 @@ def _add_pattern(pattern: str, tool_name: str, arg_builder: callable, bridge: st
 
 
 def _extract_email(text: str) -> str:
-    """Extract an email address from text."""
+    """Extract an email address from text, falling back to USER_EMAIL config."""
     m = re.search(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", text)
-    return m.group(0) if m else ""
+    if m:
+        return m.group(0)
+    from vox.config import USER_EMAIL
+    return USER_EMAIL
 
 
 def _extract_url(text: str) -> str:
@@ -133,6 +136,12 @@ _add_pattern(
     "I'll send that over...",
 )
 _add_pattern(
+    r"\b(email|send)\s+(me|it|this|that|the)\b",
+    "send_email",
+    lambda m, t: {"to": _extract_email(t)},
+    "I'll send that over...",
+)
+_add_pattern(
     r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b",
     "generate_image",
     lambda m, t: {"prompt": _extract_image_prompt(t)},
@@ -219,7 +228,7 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         re.IGNORECASE,
     ),
     "send_email": re.compile(
-        r"\b(email|send|mail)\b.*\S+@\S+\.\S+",
+        r"\b(email|send|mail)\b.*(\S+@\S+\.\S+|\b(me|it|this|that|the)\b)",
         re.IGNORECASE,
     ),
     "generate_image": re.compile(
@@ -699,6 +708,7 @@ def _generate_image(prompt: str = "", style: str = "", **kwargs) -> str:
         DOWNLOADS_DIR,
         IMAGE_HEIGHT,
         IMAGE_MODEL,
+        IMAGE_NEGATIVE_PROMPT,
         IMAGE_NSFW_FILTER,
         IMAGE_STEPS,
         IMAGE_WIDTH,
@@ -733,9 +743,10 @@ def _generate_image(prompt: str = "", style: str = "", **kwargs) -> str:
         pipe.enable_attention_slicing()
         log.info("Pipeline loaded and moved to CUDA")
 
-        log.info("Generating image: %r", full_prompt)
+        log.info("Generating image: %r (negative: %r)", full_prompt, IMAGE_NEGATIVE_PROMPT[:60])
         result = pipe(
             full_prompt,
+            negative_prompt=IMAGE_NEGATIVE_PROMPT or None,
             num_inference_steps=IMAGE_STEPS,
             width=IMAGE_WIDTH,
             height=IMAGE_HEIGHT,

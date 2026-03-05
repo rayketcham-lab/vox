@@ -125,6 +125,8 @@ def test_intent_detection_no_false_positives(text):
     ("web_search", "find me a recipe for tacos"),
     ("send_email", "email this to ray@example.com"),
     ("send_email", "send the results to test@test.com"),
+    ("send_email", "email me the report"),
+    ("send_email", "send it to me"),
     ("generate_image", "create an image of a sunset"),
     ("generate_image", "draw me a picture of a dog"),
     ("generate_image", "paint me something beautiful"),
@@ -198,6 +200,23 @@ def test_send_email_extracts_address(text, expected_email):
     assert intent is not None
     assert intent.tool_name == "send_email"
     assert intent.args.get("to") == expected_email
+
+
+def test_email_me_without_address(monkeypatch):
+    """'email me' (no address) should detect send_email and use USER_EMAIL fallback."""
+    monkeypatch.setattr("vox.config.USER_EMAIL", "user@example.com")
+    intent = detect_intent("email me the results")
+    assert intent is not None
+    assert intent.tool_name == "send_email"
+    assert intent.args.get("to") == "user@example.com"
+
+
+def test_email_me_no_config():
+    """'email me' with no USER_EMAIL set should still detect intent (empty 'to')."""
+    # USER_EMAIL defaults to "" — tool will handle the missing recipient
+    intent = detect_intent("send me the report")
+    assert intent is not None
+    assert intent.tool_name == "send_email"
 
 
 def test_combined_search_and_email_detects_search_first():
