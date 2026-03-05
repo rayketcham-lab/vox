@@ -293,9 +293,30 @@ _add_pattern(
 )
 
 
+_NEGATION_PATTERN = re.compile(
+    r"\b(don'?t|do\s+not|don't|no|never|stop|skip|without|instead\s+of|rather\s+than)\b"
+    r".*\b(image|picture|photo|pic|selfie|generate|draw|create|show)\b",
+    re.IGNORECASE,
+)
+
+_DESCRIBE_PATTERN = re.compile(
+    r"\b(describe|tell\s+me|explain|say|words|text)\b"
+    r".*\b(you|yourself|look\s+like|appearance)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_suppress_image(text: str) -> bool:
+    """Check if the user is explicitly asking NOT to generate an image."""
+    return bool(_NEGATION_PATTERN.search(text) or _DESCRIBE_PATTERN.search(text))
+
+
 def detect_intent(text: str) -> DetectedIntent | None:
     """Fast intent detection via regex. Returns first match or None."""
+    suppress_image = _should_suppress_image(text)
     for pattern, tool_name, arg_builder, bridge in _INTENT_PATTERNS:
+        if suppress_image and tool_name == "generate_image":
+            continue
         match = pattern.search(text)
         if match:
             intent = DetectedIntent(
@@ -313,8 +334,11 @@ def detect_all_intents(text: str) -> list[DetectedIntent]:
     """Detect ALL matching intents in the text (for tool chaining)."""
     intents = []
     seen = set()
+    suppress_image = _should_suppress_image(text)
     for pattern, tool_name, arg_builder, bridge in _INTENT_PATTERNS:
         if tool_name in seen:
+            continue
+        if suppress_image and tool_name == "generate_image":
             continue
         match = pattern.search(text)
         if match:
@@ -894,7 +918,14 @@ def _load_pipeline(pipeline_cls, model_id: str, dtype):
         pipe_kwargs["variant"] = "fp16"
         pipe_kwargs["use_safetensors"] = True
     log.info("Loading diffusers-format model: %s", model_id)
-    return pipeline_cls.from_pretrained(model_id, **pipe_kwargs)
+    try:
+        return pipeline_cls.from_pretrained(model_id, **pipe_kwargs)
+    except (EnvironmentError, OSError) as e:
+        if "safetensors" in str(e).lower():
+            log.warning("Safetensors load failed, retrying with use_safetensors=False: %s", e)
+            pipe_kwargs["use_safetensors"] = False
+            return pipeline_cls.from_pretrained(model_id, **pipe_kwargs)
+        raise
 
 
 @_register("generate_image")
