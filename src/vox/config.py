@@ -18,7 +18,7 @@ WAKE_WORD = "hey vox"
 
 # Ollama
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 
 # Audio
 MIC_DEVICE_INDEX = int(os.environ.get("MIC_DEVICE_INDEX", -1))
