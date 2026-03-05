@@ -59,6 +59,13 @@ def chat(
     """
     model = model_override or OLLAMA_MODEL
 
+    # Check for user corrections/preferences before processing
+    from vox.preferences import add_rule, detect_correction
+    correction = detect_correction(user_message)
+    if correction:
+        add_rule(correction, user_message)
+        log.info("Learned user preference: %s", correction)
+
     _history.append({"role": "user", "content": user_message})
     while len(_history) > MAX_HISTORY:
         _history.pop(0)

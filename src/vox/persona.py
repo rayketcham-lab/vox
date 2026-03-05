@@ -110,10 +110,21 @@ def build_system_prompt() -> str:
     """Build a dynamic system prompt from the persona card or legacy config.
 
     Called per-request so time-aware moods stay current.
+    Includes learned user preferences/corrections.
     """
+    from vox.preferences import build_preferences_block
+
     if _card:
-        return _build_from_card(_card)
-    return _build_legacy()
+        prompt = _build_from_card(_card)
+    else:
+        prompt = _build_legacy()
+
+    # Append learned user preferences
+    prefs_block = build_preferences_block()
+    if prefs_block:
+        prompt += "\n" + prefs_block
+
+    return prompt
 
 
 def _build_from_card(card: dict) -> str:
