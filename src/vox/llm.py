@@ -9,8 +9,11 @@ the tool result into the rest of its response. Zero dead air.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 
 import ollama
+
+log = logging.getLogger(__name__)
 
 from vox.config import OLLAMA_HOST, OLLAMA_MODEL, SYSTEM_PROMPT
 from vox.tools import (
@@ -57,8 +60,10 @@ def chat(
     intents = detect_all_intents(user_message)
 
     if intents:
+        log.info("Routing to concurrent tool path: %s", [i.tool_name for i in intents])
         response = _chat_with_concurrent_tool(model, intents, on_chunk)
     else:
+        log.info("Routing to standard LLM chat (no intents detected)")
         response = _chat_standard(model, on_chunk)
 
     _history.append({"role": "assistant", "content": response})
@@ -94,12 +99,12 @@ def _chat_with_concurrent_tool(
         # 2. Stream the bridge phrase immediately via on_chunk
         if on_chunk:
             on_chunk(primary.bridge_phrase + " ")
-        print(f"[LLM] Bridge: {primary.bridge_phrase}")
-        print(f"[LLM] Tool '{primary.tool_name}' running concurrently...")
+        log.info("Bridge: %s", primary.bridge_phrase)
+        log.info("Tool '%s' running concurrently with args=%s", primary.tool_name, primary.args)
 
         # 3. Wait for tool result (usually <1s for API calls)
         tool_result = tool_future.result(timeout=10)
-        print(f"[LLM] Tool result: {tool_result[:100]}...")
+        log.info("Tool '%s' result (%d chars): %s", primary.tool_name, len(tool_result), tool_result[:200])
 
     # 4. Run chained tools sequentially (e.g., email the search results)
     chained_results = []
@@ -112,10 +117,10 @@ def _chat_with_concurrent_tool(
             if not args.get("body"):
                 args["body"] = tool_result
 
-        print(f"[LLM] Chained tool: {chained_intent.tool_name}({args})")
+        log.info("Chained tool: %s args=%s", chained_intent.tool_name, {k: v for k, v in args.items() if k != "body"})
         chained_result = execute_tool(chained_intent.tool_name, args)
         chained_results.append((chained_intent.tool_name, chained_result))
-        print(f"[LLM] Chained result: {chained_result[:100]}...")
+        log.info("Chained result (%d chars): %s", len(chained_result), chained_result[:200])
 
     # 5. Build history with all tool results
     _history.append({"role": "assistant", "content": primary.bridge_phrase})
@@ -154,12 +159,12 @@ def _chat_with_concurrent_tool(
 
     # If synthesis returned nothing, just format the tool result directly
     if full_response.strip() == primary.bridge_phrase.strip():
-        print("[LLM] Synthesis empty — using tool result directly")
+        log.warning("LLM synthesis empty — using tool result directly")
         full_response = primary.bridge_phrase + " " + tool_result.split("\n")[0]
         if on_chunk:
             on_chunk(tool_result.split("\n")[0])
 
-    print(f"[LLM] Full response: {full_response}")
+    log.info("Full response (%d chars): %s", len(full_response), full_response[:200])
     return full_response
 
 
@@ -190,17 +195,17 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
             fn_args = tool_call["function"]["arguments"]
 
             if not validate_tool_call(fn_name, current_msg):
-                print(f"[LLM] BLOCKED spurious tool call: {fn_name}({fn_args}) — not relevant to user message")
+                log.warning("BLOCKED spurious tool call: %s(%s) — not relevant to: %s", fn_name, fn_args, current_msg[:80])
                 continue
 
-            print(f"[LLM] Tool call: {fn_name}({fn_args})")
+            log.info("LLM tool call: %s(%s)", fn_name, fn_args)
             result = execute_tool(fn_name, fn_args)
             _history.append({"role": "tool", "content": str(result)})
             any_executed = True
 
         if not any_executed:
             # All tool calls were blocked — retry without tools
-            print("[LLM] All tool calls blocked, responding without tools...")
+            log.warning("All LLM tool calls blocked, responding without tools")
             response = client.chat(model=model, messages=messages, tools=None)
             msg = response["message"]
             break
@@ -212,7 +217,7 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
     if reply:
         if on_chunk:
             on_chunk(reply)
-        print(f"[LLM] Response: {reply}")
+        log.info("LLM response (%d chars): %s", len(reply), reply[:200])
         return reply
 
     # If LLM returned empty content with tool calls, get a streamed final answer
@@ -225,7 +230,7 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
             full_response += token
             if on_chunk:
                 on_chunk(token)
-    print(f"[LLM] Response: {full_response}")
+    log.info("LLM response (%d chars): %s", len(full_response), full_response[:200])
     return full_response
 
 

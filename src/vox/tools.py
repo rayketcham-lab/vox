@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Intent detection — fast keyword matching, no LLM needed (~1ms)
@@ -104,11 +107,14 @@ def detect_intent(text: str) -> DetectedIntent | None:
     for pattern, tool_name, arg_builder, bridge in _INTENT_PATTERNS:
         match = pattern.search(text)
         if match:
-            return DetectedIntent(
+            intent = DetectedIntent(
                 tool_name=tool_name,
                 args=arg_builder(match, text),
                 bridge_phrase=bridge,
             )
+            log.info("Intent detected: %s args=%s", tool_name, intent.args)
+            return intent
+    log.debug("No intent detected for: %s", text[:80])
     return None
 
 
@@ -127,6 +133,8 @@ def detect_all_intents(text: str) -> list[DetectedIntent]:
                 bridge_phrase=bridge,
             ))
             seen.add(tool_name)
+    if intents:
+        log.info("All intents: %s", [i.tool_name for i in intents])
     return intents
 
 
@@ -477,10 +485,17 @@ def _send_email(
 
     from vox.config import SMTP_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER
 
+    log.info("send_email called: to=%s, subject=%s, attachments=%s", to, subject, type(attachments).__name__)
+
     if not to:
+        log.warning("send_email: no recipient provided")
         return "No recipient email address provided."
     if not SMTP_HOST:
+        log.warning("send_email: SMTP_HOST not configured")
         return "Email not configured. Set SMTP_HOST in .env"
+
+    log.info("SMTP config: host=%s, port=%s, from=%s, user=%s",
+             SMTP_HOST, SMTP_PORT, SMTP_FROM, SMTP_USER or "(none)")
 
     # Normalize attachments to a list
     if isinstance(attachments, str):
@@ -523,21 +538,29 @@ def _send_email(
         msg["From"] = SMTP_FROM or SMTP_USER or f"vox@{SMTP_HOST}"
         msg["To"] = to
 
+        log.info("Connecting to SMTP %s:%s ...", SMTP_HOST, SMTP_PORT)
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
             server.ehlo()
-            if server.has_extn("starttls"):
+            has_tls = server.has_extn("starttls")
+            log.info("STARTTLS available: %s", has_tls)
+            if has_tls:
                 server.starttls()
                 server.ehlo()
             if SMTP_USER and SMTP_PASSWORD:
+                log.info("Authenticating as %s ...", SMTP_USER)
                 server.login(SMTP_USER, SMTP_PASSWORD)
+            log.info("Sending message: from=%s to=%s subject=%s", msg["From"], to, msg["Subject"])
             server.send_message(msg)
+            log.info("SMTP send_message completed successfully")
 
         result = f"Email sent to {to} with subject: {subject}"
         if warnings:
             result += "\nWarnings: " + "; ".join(warnings)
+        log.info("send_email result: %s", result)
         return result
 
     except Exception as e:
+        log.exception("send_email failed: %s", e)
         return f"Failed to send email: {e}"
 
 
@@ -586,10 +609,15 @@ def _web_fetch(url: str = "", **kwargs) -> str:
 
 def execute_tool(name: str, args: dict) -> str:
     """Execute a registered tool by name."""
+    log.info("execute_tool: %s(%s)", name, args)
     fn = _TOOL_REGISTRY.get(name)
     if fn is None:
+        log.warning("Unknown tool: %s", name)
         return f"Unknown tool: {name}"
     try:
-        return fn(**args)
+        result = fn(**args)
+        log.info("execute_tool %s result (%d chars): %s", name, len(result), result[:200])
+        return result
     except Exception as e:
+        log.exception("Tool error in %s: %s", name, e)
         return f"Tool error: {e}"

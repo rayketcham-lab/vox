@@ -64,7 +64,7 @@ def test_send_email_missing_recipient():
     ("find me schematics for the electrical system on a 2007 Chevy Tahoe", "web_search"),
     ("google best pizza near me", "web_search"),
     # Email
-    ("email me at rayketcham@ogjos.com", "send_email"),
+    ("email me at user@example.com", "send_email"),
     ("can you email the results to test@example.com", "send_email"),
 ])
 def test_intent_detection_matches(text, expected_tool):

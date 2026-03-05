@@ -5,7 +5,7 @@
 If you discover a security vulnerability in VOX, please report it responsibly:
 
 1. **Do NOT open a public GitHub issue**
-2. Email: security@rayketcham.com
+2. Use [GitHub Security Advisories](https://github.com/rayketcham-lab/vox/security/advisories/new)
 3. Include steps to reproduce and potential impact
 
 ## Security Design
