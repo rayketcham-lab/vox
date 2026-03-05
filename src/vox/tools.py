@@ -52,9 +52,14 @@ def _extract_image_prompt(text: str) -> str:
         r"^(can you|could you|please|hey vox|vox)\s+",
         "", text.strip(), flags=re.IGNORECASE,
     )
-    # Strip "email/send me" prefix
+    # Strip "email/mail/send/give/show me" prefix
     prompt = re.sub(
-        r"^(email|send)\s+me\s+",
+        r"^(email|mail|send|give|show)\s+me\s+",
+        "", prompt, flags=re.IGNORECASE,
+    )
+    # Strip count prefix ("5 pictures of" → "")
+    prompt = re.sub(
+        r"^\d+\s+",
         "", prompt, flags=re.IGNORECASE,
     )
     # Strip command verbs
@@ -64,14 +69,16 @@ def _extract_image_prompt(text: str) -> str:
     )
     # Strip "me" after command verb
     prompt = re.sub(r"^me\s+", "", prompt, flags=re.IGNORECASE)
-    # Strip "an image/picture/photo of"
+    # Strip "an image/picture/photo/pics of"
     prompt = re.sub(
-        r"^(an?\s+)?(image|picture|photo|artwork|illustration)\s+(of\s+)?",
+        r"^(an?\s+)?(image|picture|photo|artwork|illustration|pic|pics|pictures|photos|images)\s+(of\s+|with\s+)?",
         "", prompt, flags=re.IGNORECASE,
     )
     # Strip email-related tail ("...and email it to foo@bar.com", "...at foo@bar.com")
     prompt = re.sub(r"\b(and\s+)?(email|send)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
     prompt = re.sub(r"\b(at|to)\s+\S+@\S+\.\S+.*$", "", prompt, flags=re.IGNORECASE).strip()
+    # Strip purpose tails — "for a ... meme", "for my blog", etc.
+    prompt = re.sub(r"\s+for\s+(a|an|my|the|some)\b.*\b(meme|blog|post|project|website|collection)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
     # Strip conversational tails — "but we should...", "and we need...", "we should...", etc.
     prompt = re.sub(r",?\s*\b(but|however)\s+(we|you|i|it)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
     prompt = re.sub(r",?\s*\b(and|,)\s+(we|you|i)\s+(should|need|want|can|could|have)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
@@ -131,12 +138,12 @@ _add_pattern(
 )
 # Email with explicit address (highest priority for email)
 _add_pattern(
-    r"\bemail\b.*\b\S+@\S+\.\S+",
+    r"\b(email|mail)\b.*\b\S+@\S+\.\S+",
     "send_email",
     lambda m, t: {"to": _extract_email(t)},
     "I'll send that over...",
 )
-# Image generation patterns — BEFORE generic "email me" so
+# Image generation patterns — BEFORE generic "email/mail me" so
 # "email me a picture" routes to generate_image (not send_email)
 _add_pattern(
     r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b",
@@ -156,16 +163,30 @@ _add_pattern(
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
 )
-# "email me a picture of X" / "send me an image of X" — implies generation
+# "email/mail/send/give me a picture of X" — implies generation
 _add_pattern(
-    r"\b(email|send)\s+me\b.*\b(image|picture|photo)\b",
+    r"\b(email|mail|send|give|show)\s+me\b.*\b(image|picture|photo|pic|pics)\b",
     "generate_image",
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
 )
-# Generic "email me" / "send me" (no address) — AFTER image patterns
+# "give me N pictures of X" / "show me X" — broader image triggers
 _add_pattern(
-    r"\b(email|send)\s+(me|it|this|that|the)\b",
+    r"\b(give|show|get)\s+me\b.*\b(picture|image|photo|pic|pics)\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
+# "\d+ pictures/images of" — count-based trigger
+_add_pattern(
+    r"\b\d+\s+(picture|image|photo|pic|pics)\w*\s+(of|with)\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
+# Generic "email/mail me" / "send me" (no address) — AFTER image patterns
+_add_pattern(
+    r"\b(email|mail|send)\s+(me|it|this|that|the)\b",
     "send_email",
     lambda m, t: {"to": _extract_email(t)},
     "I'll send that over...",
@@ -232,14 +253,15 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         re.IGNORECASE,
     ),
     "send_email": re.compile(
-        r"\b(email|send|mail)\b.*(\S+@\S+\.\S+|\b(me|it|this|that|the)\b)",
+        r"\b(email|send|mail)\b.*(\S+@\S+\.\S+|\b(me|it|this|that|the|results|report)\b)",
         re.IGNORECASE,
     ),
     "generate_image": re.compile(
         r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b"
         r"|\b(draw|paint)\s+me\b"
         r"|\bimagine\b"
-        r"|\b(email|send)\s+me\b.*\b(image|picture|photo)\b",
+        r"|\b(email|mail|send|give|show)\s+me\b.*\b(image|picture|photo|pic|pics)\b"
+        r"|\b\d+\s+(picture|image|photo|pic|pics)\w*\s+(of|with)\b",
         re.IGNORECASE,
     ),
 }
