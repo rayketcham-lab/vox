@@ -29,6 +29,12 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Load persona card if configured
+    from vox.config import VOX_PERSONA_CARD
+    if VOX_PERSONA_CARD:
+        from vox.persona import load_card
+        load_card(VOX_PERSONA_CARD)
+
     if args.list_devices:
         import sounddevice as sd
 

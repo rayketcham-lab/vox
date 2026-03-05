@@ -15,7 +15,8 @@ import ollama
 
 log = logging.getLogger(__name__)
 
-from vox.config import OLLAMA_HOST, OLLAMA_MODEL, SYSTEM_PROMPT, VISION_MODEL
+from vox.config import OLLAMA_HOST, OLLAMA_MODEL, VISION_MODEL
+from vox.persona import build_system_prompt
 from vox.tools import (
     TOOL_DEFINITIONS,
     DetectedIntent,
@@ -159,7 +160,7 @@ def _chat_with_concurrent_tool(
     )
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": build_system_prompt()},
         *_history,
         {"role": "user", "content": synthesis_msg},
     ]
@@ -192,7 +193,7 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
     max_tool_rounds = 3  # prevent infinite tool loops
 
     for round_num in range(max_tool_rounds):
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *_history]
+        messages = [{"role": "system", "content": build_system_prompt()}, *_history]
 
         response = client.chat(
             model=model,
@@ -238,7 +239,7 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
         return reply
 
     # If LLM returned empty content with tool calls, get a streamed final answer
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *_history]
+    messages = [{"role": "system", "content": build_system_prompt()}, *_history]
     full_response = ""
     stream = client.chat(model=model, messages=messages, stream=True)
     for chunk in stream:
@@ -282,7 +283,7 @@ def chat_with_vision(
 
     # Build messages with images for the vision model
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": build_system_prompt()},
         *_history[:-1],  # history without the last user message
         {
             "role": "user",

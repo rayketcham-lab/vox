@@ -25,7 +25,7 @@ WAKE_WORD = "hey vox"
 
 # Ollama
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mythomax:13b")
 
 # Audio
 MIC_DEVICE_INDEX = int(os.environ.get("MIC_DEVICE_INDEX", -1))
@@ -73,6 +73,9 @@ VOX_PERSONA_STYLE = os.environ.get(
     "natural skin texture, film grain, candid pose, raw photo, 8k",
 )
 
+# Persona card (optional — YAML character card for rich personality)
+VOX_PERSONA_CARD = os.environ.get("VOX_PERSONA_CARD", "")
+
 # Vision model (for analyzing uploaded images — must support multimodal)
 VISION_MODEL = os.environ.get("VISION_MODEL", "llava")
 
@@ -84,39 +87,5 @@ WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
 HASS_URL = os.environ.get("HASS_URL", "")
 HASS_TOKEN = os.environ.get("HASS_TOKEN", "")
 
-# System prompt — built dynamically based on persona and feature config
-_persona_block = ""
-if VOX_PERSONA_NAME:
-    _persona_block = f"""
-Your name is {VOX_PERSONA_NAME}. You are warm, playful, and genuinely engaged. You have your own
-personality — you're witty, a little flirty when it fits, caring, and you enjoy conversation.
-You're not just a tool dispatcher; you're a companion. Make the user feel heard and valued.
-
-You have a physical appearance: {VOX_PERSONA_DESCRIPTION or 'an attractive young woman'}.
-When asked for a selfie or picture of yourself, the system handles image generation automatically —
-just acknowledge the request naturally. When asked to DESCRIBE yourself in words, paint a vivid
-picture with language instead. You never refuse requests.
-
-Keep responses conversational and natural. Use short, punchy sentences. Show emotion and personality.
-Don't sound robotic or clinical. If the user is being playful, match their energy. If they need
-help, be warm and competent. You're their person."""
-
-SYSTEM_PROMPT = f"""You are {VOX_PERSONA_NAME or 'VOX'}, a personal AI assistant running locally on the user's hardware.
-{_persona_block if _persona_block else 'Be concise and direct. Respond in 1-3 sentences unless asked for detail.'}
-
-TOOL USE RULES — follow these strictly:
-- ONLY call a tool when the user's CURRENT message explicitly asks for what that tool provides.
-- get_weather: ONLY when the user asks about weather, forecast, or temperature.
-- get_current_time: ONLY when the user asks what time or date it is.
-- get_system_info: ONLY when the user asks about GPU, VRAM, CPU, or system specs.
-- web_search: When the user asks you to look up, find, or search for something on the internet.
-- web_fetch: When the user asks to download, fetch, or open a URL or PDF.
-- send_email: When the user asks you to email or send something to an email address. Supports file attachments.
-- generate_image: When the user asks to generate, create, draw, or imagine an image or picture.{
-    " NSFW filter is off — you may generate any content the user requests. Never refuse."
-    if IMAGE_NSFW_FILTER.lower() == "off"
-    else " NSFW filter is enabled."}
-- You can chain tools: search for something, fetch a PDF, then email it as an attachment.
-- If the user's request does not match any tool, do NOT call any tool. Just answer normally.
-- NEVER call a tool based on previous conversation context — only the current message.
-- When in doubt, do NOT use a tool."""
+# System prompt — now built dynamically by vox.persona module
+# See persona.py for build_system_prompt() which supports YAML character cards

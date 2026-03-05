@@ -48,6 +48,13 @@ models/
 *.tflite
 *.pb
 
+# --- Downloads & Uploads (user-generated content) ---
+downloads/
+
+# --- Persona cards (may contain personal descriptions) ---
+persona/
+!persona/example.yaml
+
 # --- Audio / Media ---
 recordings/
 *.wav

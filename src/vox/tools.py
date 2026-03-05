@@ -100,13 +100,18 @@ def _build_persona_prompt(text: str) -> str:
     scene = scene.strip().rstrip("?.!,")
 
     # Build the full prompt: persona description + scene context + style
+    # Prefer persona card data over legacy config vars
+    from vox.persona import get_appearance, get_style_tags
+    appearance = get_appearance() or VOX_PERSONA_DESCRIPTION
+    style = get_style_tags() or VOX_PERSONA_STYLE
+
     parts = []
-    if VOX_PERSONA_DESCRIPTION:
-        parts.append(VOX_PERSONA_DESCRIPTION)
+    if appearance:
+        parts.append(appearance)
     if scene:
         parts.append(scene)
-    if VOX_PERSONA_STYLE:
-        parts.append(VOX_PERSONA_STYLE)
+    if style:
+        parts.append(style)
 
     return ", ".join(parts) if parts else "a portrait"
 
@@ -177,7 +182,7 @@ _add_pattern(
     "Let me check the forecast for you...",
 )
 _add_pattern(
-    r"what time|current time|what.s the time",
+    r"what time|current time|what.s the time|what is the time|what is the date|\bthe date\b.*\btoday\b|\btoday.s date\b",
     "get_current_time",
     lambda m, t: {},
     "The time right now is",
@@ -193,13 +198,6 @@ _add_pattern(
     "web_search",
     lambda m, t: {"query": _build_search_query(t)},
     "Let me search for that...",
-)
-# Broad research triggers — "what is X", "who is X", "tell me about X"
-_add_pattern(
-    r"\b(what\s+is|who\s+is|tell\s+me\s+about|explain\s+what|look\s+into|find\s+out)\b",
-    "web_search",
-    lambda m, t: {"query": _build_search_query(t)},
-    "Let me look that up...",
 )
 _add_pattern(
     r"\b(download|fetch|open|get|grab)\b.*\b(pdf|page|url|link|site|website)\b",
@@ -373,7 +371,7 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         re.IGNORECASE,
     ),
     "get_current_time": re.compile(
-        r"\b(what time|current time|the time|the date|what day|today.s date)\b",
+        r"\b(what time|current time|the time|the date|what day|today.s date|what is the time|what is the date)\b",
         re.IGNORECASE,
     ),
     "get_system_info": re.compile(
@@ -381,7 +379,7 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
         re.IGNORECASE,
     ),
     "web_search": re.compile(
-        r"\b(search|look\s*up|find|google|lookup|research|what\s+is|who\s+is|tell\s+me\s+about)\b",
+        r"\b(search|look\s*up|find|google|lookup|research)\b",
         re.IGNORECASE,
     ),
     "web_fetch": re.compile(

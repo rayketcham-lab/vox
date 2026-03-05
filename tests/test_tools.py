@@ -57,6 +57,8 @@ def test_send_email_missing_recipient():
     # Time
     ("what time is it?", "get_current_time"),
     ("what's the current time?", "get_current_time"),
+    ("what is the time", "get_current_time"),
+    ("what is the date today", "get_current_time"),
     # System
     ("tell me the system info", "get_system_info"),
     ("how much vram do I have?", "get_system_info"),
@@ -67,6 +69,7 @@ def test_send_email_missing_recipient():
     ("look up the specs for an RTX 4090", "web_search"),
     ("find me schematics for the electrical system on a 2007 Chevy Tahoe", "web_search"),
     ("google best pizza near me", "web_search"),
+    ("research quantum computing", "web_search"),
     # Email
     ("email me at user@example.com", "send_email"),
     ("can you email the results to test@example.com", "send_email"),
@@ -180,7 +183,7 @@ def test_validate_unknown_tool_passes_through():
     ),
     (
         "Can you look up Python asyncio tutorial",
-        "look up Python asyncio tutorial",
+        "Python asyncio tutorial",
     ),
 ])
 def test_web_search_extracts_query(text, expected_query_contains):
