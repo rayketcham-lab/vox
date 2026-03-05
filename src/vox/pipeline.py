@@ -31,7 +31,8 @@ def _print_config_summary() -> None:
     if SMTP_HOST:
         features.append("email")
     try:
-        import diffusers  # noqa: F401
+        import torch  # noqa: F401
+        from diffusers import StableDiffusionPipeline  # noqa: F401
         features.append("image-gen")
         if IMAGE_NSFW_FILTER.lower() == "off":
             features.append("NSFW-filter:off")

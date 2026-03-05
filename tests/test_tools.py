@@ -448,6 +448,9 @@ def test_generate_image_no_prompt():
 @pytest.mark.parametrize("text,expected_fragment", [
     ("generate an image of a sunset over the ocean", "sunset over the ocean"),
     ("draw me a picture of a happy cat", "happy cat"),
+    # Conversational tails should be stripped
+    ("draw me a naked brunette, but we should be able to utilize the 3090 to draw it", "naked brunette"),
+    ("paint me a landscape, however you can make it any style", "landscape"),
 ])
 def test_extract_image_prompt(text, expected_fragment):
     prompt = _extract_image_prompt(text)

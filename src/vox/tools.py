@@ -69,6 +69,9 @@ def _extract_image_prompt(text: str) -> str:
     # Strip email-related tail ("...and email it to foo@bar.com", "...at foo@bar.com")
     prompt = re.sub(r"\b(and\s+)?(email|send)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
     prompt = re.sub(r"\b(at|to)\s+\S+@\S+\.\S+.*$", "", prompt, flags=re.IGNORECASE).strip()
+    # Strip conversational tails — "but we should...", "and we need...", "we should...", etc.
+    prompt = re.sub(r",?\s*\b(but|however)\s+(we|you|i|it)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
+    prompt = re.sub(r",?\s*\b(and|,)\s+(we|you|i)\s+(should|need|want|can|could|have)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
     return prompt.strip().rstrip("?.!")
 
 
