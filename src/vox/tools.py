@@ -129,18 +129,15 @@ _add_pattern(
     lambda m, t: {"url": _extract_url(t)},
     "Let me fetch that for you...",
 )
+# Email with explicit address (highest priority for email)
 _add_pattern(
     r"\bemail\b.*\b\S+@\S+\.\S+",
     "send_email",
     lambda m, t: {"to": _extract_email(t)},
     "I'll send that over...",
 )
-_add_pattern(
-    r"\b(email|send)\s+(me|it|this|that|the)\b",
-    "send_email",
-    lambda m, t: {"to": _extract_email(t)},
-    "I'll send that over...",
-)
+# Image generation patterns — BEFORE generic "email me" so
+# "email me a picture" routes to generate_image (not send_email)
 _add_pattern(
     r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b",
     "generate_image",
@@ -165,6 +162,13 @@ _add_pattern(
     "generate_image",
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
+)
+# Generic "email me" / "send me" (no address) — AFTER image patterns
+_add_pattern(
+    r"\b(email|send)\s+(me|it|this|that|the)\b",
+    "send_email",
+    lambda m, t: {"to": _extract_email(t)},
+    "I'll send that over...",
 )
 
 
