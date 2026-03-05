@@ -384,17 +384,23 @@ def _send_email(to: str = "", subject: str = "", body: str = "", **kwargs) -> st
     if not to:
         return "No recipient email address provided."
     if not SMTP_HOST:
-        return "Email not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, SMTP_FROM in .env"
+        return "Email not configured. Set SMTP_HOST in .env"
 
     try:
         msg = MIMEText(body)
         msg["Subject"] = subject or "Message from VOX"
-        msg["From"] = SMTP_FROM or SMTP_USER
+        msg["From"] = SMTP_FROM or SMTP_USER or f"vox@{SMTP_HOST}"
         msg["To"] = to
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            server.ehlo()
+            # Use STARTTLS if the server supports it
+            if server.has_extn("starttls"):
+                server.starttls()
+                server.ehlo()
+            # Authenticate if credentials are configured
+            if SMTP_USER and SMTP_PASSWORD:
+                server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
 
         return f"Email sent to {to} with subject: {subject}"

@@ -26,10 +26,10 @@ def test_get_system_info():
     assert "Python:" in result
 
 
-def test_send_email_no_config():
-    """Email tool should fail gracefully when SMTP is not configured."""
-    result = execute_tool("send_email", {"to": "test@example.com", "subject": "Test", "body": "Hi"})
-    assert "not configured" in result or "Failed" in result
+def test_send_email_missing_recipient():
+    """Email tool should fail gracefully when no recipient is provided."""
+    result = execute_tool("send_email", {"to": "", "subject": "Test", "body": "Hi"})
+    assert "No recipient" in result
 
 
 # ---------------------------------------------------------------------------
