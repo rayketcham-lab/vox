@@ -43,6 +43,35 @@ def _extract_url(text: str) -> str:
     return m.group(0).rstrip(".,;!?)") if m else ""
 
 
+def _extract_image_prompt(text: str) -> str:
+    """Extract an image prompt by stripping command words and filler."""
+    prompt = re.sub(
+        r"^(can you|could you|please|hey vox|vox)\s+",
+        "", text.strip(), flags=re.IGNORECASE,
+    )
+    # Strip "email/send me" prefix
+    prompt = re.sub(
+        r"^(email|send)\s+me\s+",
+        "", prompt, flags=re.IGNORECASE,
+    )
+    # Strip command verbs
+    prompt = re.sub(
+        r"^(generate|create|draw|make|paint|imagine)\s+",
+        "", prompt, flags=re.IGNORECASE,
+    )
+    # Strip "me" after command verb
+    prompt = re.sub(r"^me\s+", "", prompt, flags=re.IGNORECASE)
+    # Strip "an image/picture/photo of"
+    prompt = re.sub(
+        r"^(an?\s+)?(image|picture|photo|artwork|illustration)\s+(of\s+)?",
+        "", prompt, flags=re.IGNORECASE,
+    )
+    # Strip email-related tail ("...and email it to foo@bar.com", "...at foo@bar.com")
+    prompt = re.sub(r"\b(and\s+)?(email|send)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
+    prompt = re.sub(r"\b(at|to)\s+\S+@\S+\.\S+.*$", "", prompt, flags=re.IGNORECASE).strip()
+    return prompt.strip().rstrip("?.!")
+
+
 def _build_search_query(text: str) -> str:
     """Build a search query by stripping command words and email addresses."""
     # Remove common command prefixes
@@ -99,6 +128,31 @@ _add_pattern(
     "send_email",
     lambda m, t: {"to": _extract_email(t)},
     "I'll send that over...",
+)
+_add_pattern(
+    r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
+_add_pattern(
+    r"\b(draw|paint)\s+me\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
+_add_pattern(
+    r"\bimagine\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
+)
+# "email me a picture of X" / "send me an image of X" — implies generation
+_add_pattern(
+    r"\b(email|send)\s+me\b.*\b(image|picture|photo)\b",
+    "generate_image",
+    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    "Let me generate that image for you...",
 )
 
 
@@ -163,6 +217,13 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
     ),
     "send_email": re.compile(
         r"\b(email|send|mail)\b.*\S+@\S+\.\S+",
+        re.IGNORECASE,
+    ),
+    "generate_image": re.compile(
+        r"\b(generate|create|draw|make|paint|imagine)\b.*\b(image|picture|photo|artwork|illustration)\b"
+        r"|\b(draw|paint)\s+me\b"
+        r"|\bimagine\b"
+        r"|\b(email|send)\s+me\b.*\b(image|picture|photo)\b",
         re.IGNORECASE,
     ),
 }
@@ -250,6 +311,27 @@ TOOL_DEFINITIONS: list[dict] = [
                     },
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Generate an image from a text prompt using Stable Diffusion.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Text description of the image to generate",
+                    },
+                    "style": {
+                        "type": "string",
+                        "description": "Optional style modifier (e.g. 'photorealistic', 'watercolor', 'oil painting')",
+                    },
+                },
+                "required": ["prompt"],
             },
         },
     },
@@ -605,6 +687,69 @@ def _web_fetch(url: str = "", **kwargs) -> str:
 
     except Exception as e:
         return f"Fetch failed: {e}"
+
+
+@_register("generate_image")
+def _generate_image(prompt: str = "", style: str = "", **kwargs) -> str:
+    """Generate an image using Stable Diffusion."""
+    from vox.config import (
+        DOWNLOADS_DIR,
+        IMAGE_HEIGHT,
+        IMAGE_MODEL,
+        IMAGE_NSFW_FILTER,
+        IMAGE_STEPS,
+        IMAGE_WIDTH,
+    )
+
+    if not prompt:
+        return "No image prompt provided."
+
+    full_prompt = f"{prompt}, {style}" if style else prompt
+    log.info("generate_image: prompt=%r, style=%r, model=%s", prompt, style, IMAGE_MODEL)
+    log.info("generate_image: steps=%d, size=%dx%d, nsfw_filter=%s",
+             IMAGE_STEPS, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_NSFW_FILTER)
+
+    try:
+        import torch
+        from diffusers import StableDiffusionPipeline
+    except ImportError:
+        log.error("generate_image: diffusers not installed")
+        return "Image generation requires the 'diffusers' package. Install with: pip install vox[image]"
+
+    try:
+        log.info("Loading Stable Diffusion pipeline: %s", IMAGE_MODEL)
+        pipe_kwargs = {
+            "torch_dtype": torch.float16,
+        }
+        if IMAGE_NSFW_FILTER.lower() == "off":
+            log.info("NSFW safety checker disabled")
+            pipe_kwargs["safety_checker"] = None
+
+        pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL, **pipe_kwargs)
+        pipe = pipe.to("cuda")
+        pipe.enable_attention_slicing()
+        log.info("Pipeline loaded and moved to CUDA")
+
+        log.info("Generating image: %r", full_prompt)
+        result = pipe(
+            full_prompt,
+            num_inference_steps=IMAGE_STEPS,
+            width=IMAGE_WIDTH,
+            height=IMAGE_HEIGHT,
+        )
+        image = result.images[0]
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"vox_image_{timestamp}.png"
+        filepath = DOWNLOADS_DIR / filename
+        image.save(filepath)
+        log.info("Image saved to %s", filepath)
+
+        return f"Image generated and saved to {filepath}"
+
+    except Exception as e:
+        log.exception("generate_image failed: %s", e)
+        return f"Image generation failed: {e}"
 
 
 def execute_tool(name: str, args: dict) -> str:

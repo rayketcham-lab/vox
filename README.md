@@ -12,6 +12,7 @@ VOX runs LLM inference, speech recognition, and voice synthesis directly on your
 - **Speech-to-Text** — GPU-accelerated transcription (Faster-Whisper on CUDA)
 - **LLM Reasoning** — Local model on your GPU via Ollama, with tool calling
 - **Text-to-Speech** — Natural voice synthesis (Piper for speed / XTTS v2 for quality)
+- **Image Generation** — Local Stable Diffusion on GPU, generates images from text prompts
 - **Tool Calling** — Extensible function registry for real-world actions
 - **Fast** — Sub-second LLM responses, model stays hot in VRAM
 
@@ -33,14 +34,18 @@ cd vox
 cp .env.example .env
 # Edit .env with your settings
 
-# Install
+# Install (base)
 pip install -e ".[dev]"
+
+# Install with image generation support
+pip install -e ".[image]"
 
 # Pull an LLM model
 ollama pull llama3.2
 
 # Run in text mode (no mic needed)
 vox --text
+# Try: "draw me a sunset" or "generate an image of a cat and email it to me"
 
 # Run with voice
 vox --no-wake    # skip wake word, press Enter to speak
@@ -58,10 +63,16 @@ All components run locally. VRAM budget (~24GB):
 - Whisper: ~1-2 GB
 - LLM (7-13B): ~6-15 GB
 - TTS: ~1-2 GB
+- Stable Diffusion 1.5: ~4 GB (loaded on demand)
+
+Typical total with all services: ~17 GB on an RTX 3090 (24GB).
 
 ## Configuration
 
 All configuration is via environment variables. See [`.env.example`](.env.example) for available options.
+
+Notable settings:
+- `IMAGE_NSFW_FILTER` — Enable/disable the NSFW safety filter for image generation (default: enabled)
 
 ## Project Status
 

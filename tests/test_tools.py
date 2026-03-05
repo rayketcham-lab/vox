@@ -4,6 +4,7 @@ import pytest
 
 from vox.tools import (
     _clean_ddg_url,
+    _extract_image_prompt,
     detect_all_intents,
     detect_intent,
     execute_tool,
@@ -66,6 +67,13 @@ def test_send_email_missing_recipient():
     # Email
     ("email me at user@example.com", "send_email"),
     ("can you email the results to test@example.com", "send_email"),
+    # Image generation
+    ("generate an image of a sunset", "generate_image"),
+    ("create a picture of a dog", "generate_image"),
+    ("draw me a landscape", "generate_image"),
+    ("paint me a portrait", "generate_image"),
+    ("imagine a futuristic city", "generate_image"),
+    ("make an illustration of a cat", "generate_image"),
 ])
 def test_intent_detection_matches(text, expected_tool):
     intent = detect_intent(text)
@@ -89,6 +97,9 @@ def test_intent_detection_matches(text, expected_tool):
     "what are the system requirements for Cyberpunk 2077?",
     "hello, how are you doing today?",
     "thanks for the help",
+    "tell me about image formats",
+    "how do digital images work?",
+    "draw a conclusion from this data",
 ])
 def test_intent_detection_no_false_positives(text):
     intent = detect_intent(text)
@@ -114,6 +125,9 @@ def test_intent_detection_no_false_positives(text):
     ("web_search", "find me a recipe for tacos"),
     ("send_email", "email this to ray@example.com"),
     ("send_email", "send the results to test@test.com"),
+    ("generate_image", "create an image of a sunset"),
+    ("generate_image", "draw me a picture of a dog"),
+    ("generate_image", "paint me something beautiful"),
 ])
 def test_validate_tool_call_allows_relevant(tool, text):
     assert validate_tool_call(tool, text) is True
@@ -134,6 +148,8 @@ def test_validate_tool_call_allows_relevant(tool, text):
     ("web_search", "how do I fix a leaking faucet?"),
     ("send_email", "tell me about email protocols"),
     ("send_email", "how does SMTP work?"),
+    ("generate_image", "tell me about image compression"),
+    ("generate_image", "how does JPEG encoding work?"),
 ])
 def test_validate_tool_call_blocks_irrelevant(tool, text):
     assert validate_tool_call(tool, text) is False
@@ -413,3 +429,41 @@ def test_web_fetch_empty_url():
 def test_web_fetch_invalid_url():
     result = execute_tool("web_fetch", {"url": "not-a-url"})
     assert "Invalid URL" in result
+
+
+# ---------------------------------------------------------------------------
+# generate_image — execution edge cases
+# ---------------------------------------------------------------------------
+
+def test_generate_image_no_prompt():
+    """Empty prompt should return an error message."""
+    result = execute_tool("generate_image", {"prompt": ""})
+    assert "No" in result and "prompt" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# generate_image — prompt extraction
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected_fragment", [
+    ("generate an image of a sunset over the ocean", "sunset over the ocean"),
+    ("draw me a picture of a happy cat", "happy cat"),
+])
+def test_extract_image_prompt(text, expected_fragment):
+    prompt = _extract_image_prompt(text)
+    assert expected_fragment in prompt.lower(), (
+        f"Expected '{expected_fragment}' in extracted prompt '{prompt}'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# generate_image — chaining with other tools
+# ---------------------------------------------------------------------------
+
+def test_generate_image_and_email_chaining():
+    """Should detect both generate_image and send_email in a combined request."""
+    text = "draw me a sunset and email it to user@example.com"
+    intents = detect_all_intents(text)
+    tool_names = [i.tool_name for i in intents]
+    assert "generate_image" in tool_names
+    assert "send_email" in tool_names

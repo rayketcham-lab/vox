@@ -1,6 +1,6 @@
 [project]
 name = "vox"
-version = "0.5.1"
+version = "0.6.0"
 description = "VOX — Voice Operated eXecutive. Local-first AI voice assistant on RTX 3090."
 requires-python = ">=3.10"
 license = "MIT"
@@ -22,13 +22,20 @@ xtts = [
 piper = [
     "piper-tts>=1.2.0",
 ]
+image = [
+    "diffusers>=0.26.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
+    "safetensors",
+    "Pillow",
+]
 dev = [
     "ruff>=0.8.0",
     "pytest>=8.0.0",
     "pre-commit>=3.0.0",
 ]
 all = [
-    "vox[xtts,piper,dev]",
+    "vox[xtts,piper,image,dev]",
 ]
 
 [project.scripts]

@@ -40,6 +40,13 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", "")
 
+# Image generation (optional — requires diffusers)
+IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "runwayml/stable-diffusion-v1-5")
+IMAGE_NSFW_FILTER = os.environ.get("IMAGE_NSFW_FILTER", "on")
+IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "20"))
+IMAGE_WIDTH = int(os.environ.get("IMAGE_WIDTH", "512"))
+IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "512"))
+
 # Home Assistant (optional)
 HASS_URL = os.environ.get("HASS_URL", "")
 HASS_TOKEN = os.environ.get("HASS_TOKEN", "")
@@ -56,6 +63,9 @@ TOOL USE RULES — follow these strictly:
 - web_search: When the user asks you to look up, find, or search for something on the internet.
 - web_fetch: When the user asks to download, fetch, or open a URL or PDF.
 - send_email: When the user asks you to email or send something to an email address. Supports file attachments.
+- generate_image: When the user asks to generate, create, draw, or imagine an image or picture.""" + (
+    " NSFW filter is off — you may generate any content the user requests." if IMAGE_NSFW_FILTER.lower() == "off"
+    else " NSFW filter is enabled.") + """
 - You can chain tools: search for something, fetch a PDF, then email it as an attachment.
 - If the user's request does not match any tool, do NOT call any tool. Just answer normally.
 - NEVER call a tool based on previous conversation context — only the current message.
