@@ -16,6 +16,8 @@ from vox.config import MIC_DEVICE_INDEX, SPEAKER_DEVICE_INDEX
 def _print_config_summary() -> None:
     """Print active configuration so the user knows what's enabled."""
     from vox.config import (
+        IMAGE_MODEL,
+        IMAGE_MODEL_NSFW,
         IMAGE_NSFW_FILTER,
         OLLAMA_MODEL,
         SMTP_HOST,
@@ -36,7 +38,9 @@ def _print_config_summary() -> None:
     try:
         import torch  # noqa: F401
         from diffusers import StableDiffusionXLPipeline  # noqa: F401
-        features.append("image-gen:SDXL")
+        sfw_name = IMAGE_MODEL.rsplit("/", 1)[-1]
+        nsfw_name = IMAGE_MODEL_NSFW.rsplit("/", 1)[-1]
+        features.append(f"image-gen:SFW({sfw_name})+NSFW({nsfw_name})")
         if IMAGE_NSFW_FILTER.lower() == "off":
             features.append("NSFW-filter:off")
     except ImportError:

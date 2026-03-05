@@ -64,28 +64,36 @@ def _build_persona_prompt(text: str) -> str:
     """Build an SD prompt using the persona description + any scene context from the user."""
     from vox.config import VOX_PERSONA_DESCRIPTION, VOX_PERSONA_STYLE
 
-    # Extract scene/context modifiers from the user's request
+    # Extract scene/context modifiers from the user's request.
+    # Strategy: strip everything that ISN'T a scene/pose/location modifier.
     scene = text.strip()
+    # Strip conversational fluff and compliments
+    scene = re.sub(r"^.*?\b(can\s+(i|you)|could\s+(i|you)|i\s+(want|need|like|love|would))\b", "", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"^.*?\b(have\s+a|get\s+a|see\s+a|give\s+me)\b", "", scene, flags=re.IGNORECASE)
     # Strip common prefixes
-    scene = re.sub(r"^(can you|could you|please|hey vox|vox)\s+", "", scene, flags=re.IGNORECASE)
+    scene = re.sub(r"^(can you|could you|please|hey vox|vox)\s+", "", scene.strip(), flags=re.IGNORECASE)
     # Strip selfie-related command words
     scene = re.sub(
         r"^(send|give|show|take|email|mail)\s+(me\s+)?(a\s+)?",
-        "", scene, flags=re.IGNORECASE,
+        "", scene.strip(), flags=re.IGNORECASE,
     )
     scene = re.sub(
-        r"^(selfie|selfy|pic|picture|photo|image|snap|shot)\s*(of\s+)?(you|yourself)?\s*",
-        "", scene, flags=re.IGNORECASE,
+        r"^(selfie|selfy|pic|picture|photo|image|snap|shot|portrait)\s*(of\s+)?(you|yourself)?\s*",
+        "", scene.strip(), flags=re.IGNORECASE,
     )
-    # Strip "what do you look like" style queries
-    scene = re.sub(r"^(what\s+do\s+you\s+look\s+like)\s*", "", scene, flags=re.IGNORECASE)
-    scene = re.sub(r"^(show\s+(me\s+)?(yourself|what\s+you\s+look\s+like))\s*", "", scene, flags=re.IGNORECASE)
-    scene = re.sub(r"^(let\s+me\s+see\s+you)\s*", "", scene, flags=re.IGNORECASE)
+    # Strip question phrases
+    scene = re.sub(r"^(what\s+do\s+you\s+look\s+like)\s*", "", scene.strip(), flags=re.IGNORECASE)
+    scene = re.sub(r"^(show\s+(me\s+)?(yourself|what\s+you\s+look\s+like))\s*", "", scene.strip(), flags=re.IGNORECASE)
+    scene = re.sub(r"^(let\s+me\s+see\s+you)\s*", "", scene.strip(), flags=re.IGNORECASE)
+    # Strip "of yourself" / "of you" anywhere
+    scene = re.sub(r"\b(of\s+)?(yourself|you)\b", "", scene, flags=re.IGNORECASE)
+    # Strip "image of yourself" residue
+    scene = re.sub(r"\b(full\s*body|ful\s*body)\s*(image|picture|photo|pic)?\b", "full body", scene, flags=re.IGNORECASE)
     # Strip email-related tail
     scene = re.sub(r"\b(and\s+)?(email|send|mail)\b.*$", "", scene, flags=re.IGNORECASE).strip()
     scene = re.sub(r"\b(at|to)\s+\S+@\S+\.\S+.*$", "", scene, flags=re.IGNORECASE).strip()
-    # Clean up remaining artifacts
-    scene = re.sub(r"^(at\s+the|at|in\s+the|in|on\s+the|on|by\s+the|by|with)\s+", r"\g<0>", scene, flags=re.IGNORECASE)
+    # Strip conversational connectors
+    scene = re.sub(r"^,?\s*", "", scene)
     scene = scene.strip().rstrip("?.!,")
 
     # Build the full prompt: persona description + scene context + style
@@ -801,13 +809,34 @@ def _web_fetch(url: str = "", **kwargs) -> str:
         return f"Fetch failed: {e}"
 
 
+_NSFW_KEYWORDS = re.compile(
+    r"\b(naked|nude|nsfw|topless|lingerie|underwear|bikini|sexy|seductive"
+    r"|erotic|sensual|provocative|undress|strip|bare|exposed)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_use_nsfw_model(prompt: str, selfie: bool) -> bool:
+    """Determine if a request should route to the NSFW-capable model."""
+    from vox.config import IMAGE_NSFW_FILTER
+    # If NSFW filter is on, never use NSFW model
+    if IMAGE_NSFW_FILTER.lower() != "off":
+        return False
+    # Selfie/persona requests always use NSFW model (unrestricted assistant)
+    if selfie:
+        return True
+    # Check for NSFW keywords in the prompt
+    return bool(_NSFW_KEYWORDS.search(prompt))
+
+
 @_register("generate_image")
 def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **kwargs) -> str:
-    """Generate an image using Stable Diffusion (SDXL preferred, SD 1.5 fallback)."""
+    """Generate an image using dual-model routing: SDXL for SFW, Juggernaut for NSFW/persona."""
     from vox.config import (
         DOWNLOADS_DIR,
         IMAGE_HEIGHT,
         IMAGE_MODEL,
+        IMAGE_MODEL_NSFW,
         IMAGE_NEGATIVE_PROMPT,
         IMAGE_NSFW_FILTER,
         IMAGE_STEPS,
@@ -824,7 +853,12 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         full_prompt = f"{prompt}, {style}"
     else:
         full_prompt = prompt
-    log.info("generate_image: prompt=%r, style=%r, selfie=%s, model=%s", prompt, style, _selfie, IMAGE_MODEL)
+
+    # Dual-model routing: NSFW/persona → Juggernaut, SFW → SDXL base
+    use_nsfw = _should_use_nsfw_model(full_prompt, _selfie)
+    model_id = IMAGE_MODEL_NSFW if use_nsfw else IMAGE_MODEL
+    log.info("generate_image: prompt=%r, selfie=%s, nsfw_route=%s, model=%s",
+             prompt, _selfie, use_nsfw, model_id)
     log.info("generate_image: steps=%d, size=%dx%d, nsfw_filter=%s",
              IMAGE_STEPS, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_NSFW_FILTER)
 
@@ -834,29 +868,31 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         log.error("generate_image: torch not installed")
         return "Image generation requires PyTorch. Install with: pip install vox[image]"
 
-    # Detect whether we're using SDXL or SD 1.5 based on model name
-    is_sdxl = "xl" in IMAGE_MODEL.lower() or "sdxl" in IMAGE_MODEL.lower()
+    # Both Juggernaut and SDXL base use StableDiffusionXLPipeline
+    is_sdxl = "xl" in model_id.lower() or "sdxl" in model_id.lower() or "juggernaut" in model_id.lower()
 
     try:
         if is_sdxl:
             from diffusers import StableDiffusionXLPipeline
-            log.info("Loading SDXL pipeline: %s", IMAGE_MODEL)
+            log.info("Loading SDXL pipeline: %s", model_id)
             pipe_kwargs = {
                 "torch_dtype": torch.float16,
-                "variant": "fp16",
                 "use_safetensors": True,
             }
-            pipe = StableDiffusionXLPipeline.from_pretrained(IMAGE_MODEL, **pipe_kwargs)
+            # Only request fp16 variant for models that ship one
+            if "stabilityai" in model_id.lower():
+                pipe_kwargs["variant"] = "fp16"
+            pipe = StableDiffusionXLPipeline.from_pretrained(model_id, **pipe_kwargs)
         else:
             from diffusers import StableDiffusionPipeline
-            log.info("Loading SD 1.5 pipeline: %s", IMAGE_MODEL)
+            log.info("Loading SD 1.5 pipeline: %s", model_id)
             pipe_kwargs = {
                 "torch_dtype": torch.float16,
             }
             if IMAGE_NSFW_FILTER.lower() == "off":
                 log.info("NSFW safety checker disabled")
                 pipe_kwargs["safety_checker"] = None
-            pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL, **pipe_kwargs)
+            pipe = StableDiffusionPipeline.from_pretrained(model_id, **pipe_kwargs)
 
         pipe = pipe.to("cuda")
         pipe.enable_attention_slicing()

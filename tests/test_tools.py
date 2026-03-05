@@ -7,6 +7,7 @@ from vox.tools import (
     _clean_ddg_url,
     _extract_image_prompt,
     _is_selfie_request,
+    _should_use_nsfw_model,
     detect_all_intents,
     detect_intent,
     execute_tool,
@@ -561,6 +562,17 @@ def test_persona_prompt_building(monkeypatch):
     assert "8k" in prompt
 
 
+def test_persona_prompt_strips_conversational_fluff(monkeypatch):
+    """Conversational text should be stripped, leaving only scene modifiers."""
+    monkeypatch.setattr("vox.config.VOX_PERSONA_DESCRIPTION", "a woman with brown hair")
+    monkeypatch.setattr("vox.config.VOX_PERSONA_STYLE", "photorealistic")
+    prompt = _build_persona_prompt("I like the way you look, can I have a full body image of yourself?")
+    assert "I like" not in prompt
+    assert "brown hair" in prompt
+    assert "full body" in prompt
+    assert "photorealistic" in prompt
+
+
 def test_persona_prompt_no_description(monkeypatch):
     """Without persona description, prompt should still work."""
     monkeypatch.setattr("vox.config.VOX_PERSONA_DESCRIPTION", "")
@@ -577,3 +589,32 @@ def test_selfie_and_email_chaining(monkeypatch):
     tool_names = [i.tool_name for i in intents]
     assert "generate_image" in tool_names
     assert "send_email" in tool_names
+
+
+# ---------------------------------------------------------------------------
+# Dual-model routing (SFW → SDXL, NSFW → Juggernaut)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("prompt,selfie,expected", [
+    # Selfie always routes to NSFW model
+    ("a woman at the beach, photorealistic", True, True),
+    # NSFW keywords route to NSFW model
+    ("a naked woman on a bed", False, True),
+    ("a nude portrait, artistic", False, True),
+    ("a sexy woman in lingerie", False, True),
+    # SFW content stays on SDXL base
+    ("a sunset over the ocean", False, False),
+    ("a cat sitting on a windowsill", False, False),
+    ("a futuristic city at night", False, False),
+    ("a portrait of a woman in a dress", False, False),
+])
+def test_nsfw_model_routing(prompt, selfie, expected, monkeypatch):
+    monkeypatch.setattr("vox.config.IMAGE_NSFW_FILTER", "off")
+    assert _should_use_nsfw_model(prompt, selfie) is expected
+
+
+def test_nsfw_routing_disabled_when_filter_on(monkeypatch):
+    """When NSFW filter is ON, never route to NSFW model."""
+    monkeypatch.setattr("vox.config.IMAGE_NSFW_FILTER", "on")
+    assert _should_use_nsfw_model("a naked woman", False) is False
+    assert _should_use_nsfw_model("selfie prompt", True) is False

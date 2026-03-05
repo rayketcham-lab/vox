@@ -42,7 +42,9 @@ SMTP_FROM = os.environ.get("SMTP_FROM", "")
 USER_EMAIL = os.environ.get("USER_EMAIL", "")  # default "email me" recipient
 
 # Image generation (optional — requires diffusers)
+# Dual-model setup: SDXL base for SFW, Juggernaut for NSFW/persona
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
+IMAGE_MODEL_NSFW = os.environ.get("IMAGE_MODEL_NSFW", "RunDiffusion/Juggernaut-X-v10")
 IMAGE_NSFW_FILTER = os.environ.get("IMAGE_NSFW_FILTER", "on")
 IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "30"))
 IMAGE_WIDTH = int(os.environ.get("IMAGE_WIDTH", "1024"))
