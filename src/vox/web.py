@@ -9,17 +9,58 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+import hmac
+import secrets
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketState
 
-from vox.config import DOWNLOADS_DIR, WEB_HOST, WEB_PORT
+from vox.config import DOWNLOADS_DIR, WEB_AUTH_PASS, WEB_AUTH_USER, WEB_HOST, WEB_PORT
 from vox.llm import _history, chat, chat_with_vision
 
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="VOX Web UI")
+
+
+# --- HTTP Basic Auth middleware (optional — enabled when WEB_AUTH_USER is set) ---
+
+class _BasicAuthMiddleware(BaseHTTPMiddleware):
+    """Simple HTTP Basic Auth. Skips auth if WEB_AUTH_USER is empty."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not WEB_AUTH_USER:
+            return await call_next(request)
+
+        # Allow health check without auth
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                user, passwd = decoded.split(":", 1)
+                if (hmac.compare_digest(user, WEB_AUTH_USER)
+                        and hmac.compare_digest(passwd, WEB_AUTH_PASS)):
+                    return await call_next(request)
+            except Exception:
+                pass
+
+        return Response(
+            "Unauthorized",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="VOX"'},
+        )
+
+
+if WEB_AUTH_USER:
+    app.add_middleware(_BasicAuthMiddleware)
+    log.info("HTTP Basic Auth enabled (user: %s)", WEB_AUTH_USER)
+
 
 # Static files
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -108,8 +149,27 @@ async def lora_get_config():
     return generate_training_config(name)
 
 
+def _check_ws_auth(ws: WebSocket) -> bool:
+    """Validate Basic Auth on WebSocket upgrade if auth is enabled."""
+    if not WEB_AUTH_USER:
+        return True
+    auth = ws.headers.get("authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, passwd = decoded.split(":", 1)
+            return (hmac.compare_digest(user, WEB_AUTH_USER)
+                    and hmac.compare_digest(passwd, WEB_AUTH_PASS))
+        except Exception:
+            pass
+    return False
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(ws: WebSocket):
+    if not _check_ws_auth(ws):
+        await ws.close(code=4001, reason="Unauthorized")
+        return
     await ws.accept()
 
     session_id = str(uuid.uuid4())
@@ -123,6 +183,19 @@ async def websocket_chat(ws: WebSocket):
         while True:
             data = await ws.receive_json()
 
+            # Handle ping keep-alive + push pending notifications
+            if data.get("type") == "ping":
+                await ws.send_json({"type": "pong"})
+                # Push any fired reminders
+                while _pending_reminders:
+                    reminder_msg = _pending_reminders.pop(0)
+                    await ws.send_json({"type": "reminder", "text": reminder_msg})
+                # Push any proactive messages from the persona
+                while _pending_proactive:
+                    proactive_msg = _pending_proactive.pop(0)
+                    await ws.send_json({"type": "proactive", "text": proactive_msg})
+                continue
+
             # Handle training image uploads
             if data.get("type") == "training_image":
                 await _handle_training_upload(ws, data)
@@ -131,8 +204,8 @@ async def websocket_chat(ws: WebSocket):
             if data.get("type") != "message":
                 continue
 
-            user_text = data.get("text", "").strip()
-            user_images = data.get("images", [])  # list of base64-encoded images
+            user_text = data.get("text", "").strip()[:4000]  # cap at 4K chars
+            user_images = data.get("images", [])[:5]  # max 5 images per message
 
             if not user_text and not user_images:
                 continue
@@ -147,18 +220,19 @@ async def websocket_chat(ws: WebSocket):
     except WebSocketDisconnect:
         log.info("WebSocket disconnected: session %s", session_id)
     finally:
-        _sessions.pop(session_id, None)
+        # Keep session alive for 5 min so mobile reconnects don't lose history
         _session_locks.pop(session_id, None)
+        asyncio.get_running_loop().call_later(300, _sessions.pop, session_id, None)
 
 
 def _find_generated_images(history: list[dict], before_len: int) -> list[str]:
-    """Scan new history entries for generated image paths."""
+    """Scan new history entries for generated image/map files."""
     filenames = []
     for entry in history[before_len:]:
         if entry.get("role") == "tool":
             content = entry.get("content", "")
-            match = re.search(r"saved to (.+\.png)", content)
-            if match:
+            # Match any "saved to <filename>.png" pattern (images, maps, etc.)
+            for match in re.finditer(r"saved to (\S+\.png)", content):
                 image_path = Path(match.group(1))
                 filenames.append(image_path.name)
     return filenames
@@ -262,16 +336,21 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
         while True:
             chunk = await queue.get()
             if chunk is _SENTINEL:
-                # Flush remaining buffer
-                if _chunk_buffer and ws.client_state == WebSocketState.CONNECTED:
-                    await ws.send_json({"type": "chunk", "text": _chunk_buffer})
+                # Flush remaining buffer — strip paths before sending
+                if _chunk_buffer:
+                    flushed = re.sub(r"[A-Z]:\\[\w\\]+\.\w+", "", _chunk_buffer)
+                    flushed = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png", "", flushed, flags=re.IGNORECASE)
+                    flushed = re.sub(r"\bvox_(?:image|map)_\S+\.png\b", "", flushed, flags=re.IGNORECASE)
+                    flushed = re.sub(r"\s{2,}", " ", flushed)
+                    if flushed.strip() and ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_json({"type": "chunk", "text": flushed})
                 break
             _chunk_buffer += chunk
             # Buffer until we have enough to detect/strip paths (drive letters need context)
             if len(_chunk_buffer) > 80 or chunk.endswith((".", "!", "?", "\n")):
                 cleaned = re.sub(r"[A-Z]:\\[\w\\]+\.\w+", "", _chunk_buffer)
                 cleaned = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png", "", cleaned, flags=re.IGNORECASE)
-                cleaned = re.sub(r"\bvox_image_\S+\.png\b", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\bvox_(?:image|map)_\S+\.png\b", "", cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(r"\s{2,}", " ", cleaned)
                 if cleaned.strip() and ws.client_state == WebSocketState.CONNECTED:
                     await ws.send_json({"type": "chunk", "text": cleaned})
@@ -292,7 +371,7 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
     generated_images = _sessions.pop(f"{session_id}__images", [])
     if not generated_images:
         # Fallback: check the response text
-        for match in re.finditer(r"saved to (.+\.png)", full_response):
+        for match in re.finditer(r"saved to (\S+\.png)", full_response):
             image_path = Path(match.group(1))
             generated_images.append(image_path.name)
 
@@ -321,7 +400,7 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
         "", clean_response, flags=re.IGNORECASE,
     )
     clean_response = re.sub(
-        r"\bvox_image_\S+\.png\b", "", clean_response, flags=re.IGNORECASE,
+        r"\bvox_(?:image|map)_\S+\.png\b", "", clean_response, flags=re.IGNORECASE,
     )
     clean_response = re.sub(
         r"\s+for the image\.?", "", clean_response, flags=re.IGNORECASE,
@@ -334,12 +413,69 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
 
 @app.on_event("startup")
 async def _startup():
-    """Load persona card on server startup."""
+    """Load persona card and start background tasks on server startup."""
     from vox.config import VOX_PERSONA_CARD
     if VOX_PERSONA_CARD:
         from vox.persona import load_card
         load_card(VOX_PERSONA_CARD)
         log.info("Persona card loaded: %s", VOX_PERSONA_CARD)
+
+    # Start background loops
+    asyncio.create_task(_reminder_loop())
+    asyncio.create_task(_proactive_loop())
+
+
+async def _reminder_loop():
+    """Background loop that checks for due reminders every 30 seconds."""
+    from vox.reminders import check_and_fire
+
+    while True:
+        await asyncio.sleep(30)
+        try:
+            fired = check_and_fire()
+            if fired:
+                # Push to all connected WebSocket sessions
+                for sid, history in list(_sessions.items()):
+                    if sid.endswith("__images"):
+                        continue
+                    lock = _session_locks.get(sid)
+                    if lock is None:
+                        continue
+                    # Find the WebSocket for this session — we'll broadcast
+                    # via a stashed reference (see below)
+                for msg in fired:
+                    log.info("Reminder broadcast: %s", msg)
+                    # Stash fired reminders for next WebSocket message
+                    _pending_reminders.extend(fired)
+        except Exception:
+            log.exception("Reminder loop error")
+
+
+# Pending reminder notifications to push on next WebSocket activity
+_pending_reminders: list[str] = []
+
+# Pending proactive messages (LLM-generated, pushed on next ping)
+_pending_proactive: list[str] = []
+
+
+async def _proactive_loop():
+    """Background loop that generates proactive persona messages every ~60 seconds."""
+    from vox.proactive import get_proactive_message
+
+    await asyncio.sleep(120)  # Wait 2 min after startup before first check
+    while True:
+        await asyncio.sleep(60)
+        try:
+            prompt = get_proactive_message()
+            if prompt and not _pending_proactive:
+                # Generate via LLM in a thread (blocking call)
+                log.info("Proactive message triggered")
+                response = await asyncio.to_thread(chat, prompt)
+                if response:
+                    _pending_proactive.append(response)
+                    log.info("Proactive message queued: %s", response[:100])
+        except Exception:
+            log.exception("Proactive loop error")
 
 
 def start_server(host: str | None = None, port: int | None = None):

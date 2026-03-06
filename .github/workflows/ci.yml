@@ -82,6 +82,13 @@ jobs:
           fi
           echo "No internal IPs detected."
 
+  content-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for explicit content in source code
+        run: bash scripts/content_guard.sh
+
   # -----------------------------------------------------------------------
   # Self-hosted runners (org-level: rayketcham-lab)
   #

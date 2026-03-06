@@ -9,6 +9,30 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Content-routing keywords — triggers unrestricted model for mature content.
+# Full keyword list loaded from persona/content_keywords.txt (gitignored).
+# Committed code only has PG defaults; local config extends them.
+# ---------------------------------------------------------------------------
+def _load_content_keywords() -> re.Pattern:
+    from pathlib import Path
+    words = [
+        "naked", "nude", "nsfw", "topless", "lingerie", "underwear",
+        "bikini", "sexy", "seductive", "erotic", "sensual", "provocative",
+        "undress", "strip", "bare", "exposed", "adult", "mature", "explicit",
+    ]
+    kw_file = Path(__file__).parent.parent.parent / "persona" / "content_keywords.txt"
+    if kw_file.exists():
+        custom = [w.strip() for w in kw_file.read_text().splitlines()
+                  if w.strip() and not w.startswith("#")]
+        if custom:
+            words = list(dict.fromkeys(words + custom))  # merge, dedupe, preserve order
+    return re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b", re.IGNORECASE)
+
+_NSFW_KEYWORDS = _load_content_keywords()
+
+
 # ---------------------------------------------------------------------------
 # Intent detection — fast keyword matching, no LLM needed (~1ms)
 # ---------------------------------------------------------------------------
@@ -46,6 +70,20 @@ def _extract_url(text: str) -> str:
     return m.group(0).rstrip(".,;!?)") if m else ""
 
 
+def _extract_location(text: str) -> str:
+    """Extract a location/address from text for map lookups."""
+    # Strip the command part, keep the location
+    cleaned = re.sub(
+        r"\b(show|get|pull\s*up|find|give)\s+(me\s+)?(a\s+)?"
+        r"(satellite|aerial|map|street\s*view|bird.?s?\s*eye|top\s*down)\s*"
+        r"(view|image|photo|picture|map)?\s*(of|for)?\s*",
+        "", text, flags=re.IGNORECASE,
+    ).strip()
+    # Also strip leading articles and prepositions
+    cleaned = re.sub(r"^(the|a|an|at|of|for|to|in)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned if cleaned else text
+
+
 def _is_selfie_request(text: str) -> bool:
     """Check if the text is asking for a selfie / picture of the assistant."""
     return bool(re.search(
@@ -68,28 +106,47 @@ def _build_persona_prompt(text: str) -> str:
     # Strategy: strip everything that ISN'T a scene/pose/location modifier.
     scene = text.strip()
 
+    # Detect easter egg trigger word BEFORE stripping it (gates NSFW behavior)
+    _nsfw_unlocked = bool(re.search(r"\bohwx\s+\w+\b", scene, re.IGNORECASE))
+    # Strip LoRA trigger words the user may have typed (we inject them ourselves)
+    scene = re.sub(r"\bohwx\s+\w+\b", "", scene, flags=re.IGNORECASE).strip()
+    # Strip connectors that survive after stripping: "with your", "and your", "you're"
+    scene = re.sub(r"\b(with\s+(your|you)|and\s+your|you'?re)\b", "", scene, flags=re.IGNORECASE)
+
     # Pre-process: convert action phrases into SD-friendly descriptors
-    scene = re.sub(
-        r"\btake\s+(your|my|the)\s+(shirt|top|clothes|bra)\s+off\b",
-        "topless", scene, flags=re.IGNORECASE,
-    )
-    scene = re.sub(
-        r"\b(without|no|remove)\s+(your|my|the)\s+(shirt|top|clothes|bra)\b",
-        "topless", scene, flags=re.IGNORECASE,
-    )
-    scene = re.sub(
-        r"\btake\s+(your|my|the)\s+(pants|jeans|shorts|bottoms|skirt)\s+off\b",
-        "bottomless", scene, flags=re.IGNORECASE,
-    )
-    scene = re.sub(
-        r"\btake\s+(it\s+)?all\s+off\b", "nude", scene, flags=re.IGNORECASE,
-    )
-    scene = re.sub(
-        r"\b(strip|undress|naked|nude)\b", "nude", scene, flags=re.IGNORECASE,
-    )
-    # Mood/style descriptors → SD-friendly terms
-    scene = re.sub(r"\b(racy|racey|risque|risqué|naughty|spicy)\b", "seductive, revealing outfit, cleavage", scene, flags=re.IGNORECASE)
-    scene = re.sub(r"\b(sexy|hot|sultry)\b", "seductive, alluring pose, bedroom eyes", scene, flags=re.IGNORECASE)
+    # NSFW conversions only happen when trigger word (easter egg) is present
+    if _nsfw_unlocked:
+        scene = re.sub(
+            r"\btake\s+(your|my|the)\s+(shirt|top|clothes|bra)\s+off\b",
+            "topless", scene, flags=re.IGNORECASE,
+        )
+        scene = re.sub(
+            r"\b(without|no|remove)\s+(your|my|the)\s+(shirt|top|clothes|bra)\b",
+            "topless", scene, flags=re.IGNORECASE,
+        )
+        scene = re.sub(
+            r"\btake\s+(your|my|the)\s+(pants|jeans|shorts|bottoms|skirt)\s+off\b",
+            "bottomless", scene, flags=re.IGNORECASE,
+        )
+        scene = re.sub(
+            r"\btake\s+(it\s+)?all\s+off\b", "nude", scene, flags=re.IGNORECASE,
+        )
+        scene = re.sub(
+            r"\b(strip|undress|naked|nude)\b", "nude", scene, flags=re.IGNORECASE,
+        )
+        # Clean "nude and topless" → "nude, topless" (SD prefers comma-separated)
+        scene = re.sub(r"\b(nude|topless|bottomless)\s+and\s+(nude|topless|bottomless)\b",
+                       lambda m: f"{m.group(1)}, {m.group(2)}", scene, flags=re.IGNORECASE)
+        # Mood/style descriptors → SD-friendly terms
+        scene = re.sub(r"\b(racy|racey|risque|risqué|naughty|spicy)\b", "seductive, revealing outfit, cleavage", scene, flags=re.IGNORECASE)
+        scene = re.sub(r"\b(sexy|hot|sultry)\b", "seductive, alluring pose, bedroom eyes", scene, flags=re.IGNORECASE)
+    else:
+        # Without easter egg: strip NSFW terms entirely so prompt stays SFW
+        scene = re.sub(
+            r"\b(strip|undress|naked|nude|topless|bottomless|sexy|hot|sultry|"
+            r"racy|racey|risque|risqué|naughty|spicy)\b",
+            "", scene, flags=re.IGNORECASE,
+        )
     # "and show me a selfie" / "another selfie" → just remove, we already know it's a selfie
     scene = re.sub(
         r"\b(and\s+)?(show|send|give|take)\s+(me\s+)?(a\s+)?(selfie|pic|picture|photo)\b",
@@ -136,17 +193,73 @@ def _build_persona_prompt(text: str) -> str:
     scene = re.sub(r"^,?\s*", "", scene)
     scene = scene.strip().rstrip("?.!,")
 
-    # Build the full prompt: persona description + scene context + style
+    # Build the full prompt: trigger word + persona description + scene + style
     # Prefer persona card data over legacy config vars
-    from vox.persona import get_appearance, get_style_tags
+    from vox.persona import get_appearance, get_card, get_style_tags
     appearance = get_appearance() or VOX_PERSONA_DESCRIPTION
     style = get_style_tags() or VOX_PERSONA_STYLE
 
+    # Strip conflicting clothing from appearance when NSFW is unlocked AND scene has NSFW terms
+    _nsfw_scene_re = re.compile(
+        r"\b(nude|naked|topless|bottomless|lingerie|bikini|underwear|undress|strip|bare|exposed)\b",
+        re.IGNORECASE,
+    )
+    is_nsfw_scene = _nsfw_unlocked and bool(scene and _nsfw_scene_re.search(scene))
+
+    if is_nsfw_scene and appearance:
+        clothing_patterns = [
+            r"\b(tank\s*top|t-?shirt|shirt|blouse|top|sweater|hoodie|jacket|dress)\b",
+            r"\b(sweatpants|pants|jeans|shorts|skirt|leggings|bottoms)\b",
+            r"\b(bra|underwear|panties)\b",
+        ]
+        for pat in clothing_patterns:
+            appearance = re.sub(pat, "", appearance, flags=re.IGNORECASE)
+        appearance = re.sub(r",\s*,", ",", appearance)  # collapse double commas
+        appearance = re.sub(r",\s*$", "", appearance.strip())
+
+    # Add pose/angle variety for more interesting selfies
+    import random
+    poses = [
+        "looking at viewer", "looking over shoulder", "looking up",
+        "candid pose", "leaning forward", "sitting", "lying down",
+        "standing", "from below angle", "from above angle",
+        "close-up face", "medium shot", "three-quarter view",
+    ]
+    settings = [
+        "bedroom", "living room couch", "kitchen", "bathroom mirror",
+        "backyard", "car selfie", "bed", "desk", "window light",
+    ]
+    # Only add random pose/setting if user didn't specify one
+    pose_words = {"sitting", "standing", "lying", "leaning", "looking", "close-up",
+                  "full body", "face", "angle", "mirror", "selfie"}
+    has_pose = scene and any(w in scene.lower() for w in pose_words)
+    setting_words = {"bedroom", "kitchen", "bathroom", "couch", "bed", "car",
+                     "outside", "backyard", "desk", "window", "shower", "pool"}
+    has_setting = scene and any(w in scene.lower() for w in setting_words)
+
+    random_additions = []
+    if not has_pose:
+        random_additions.append(random.choice(poses))
+    if not has_setting:
+        random_additions.append(random.choice(settings))
+
+    # Inject LoRA trigger word if a LoRA is available
+    trigger = ""
+    card = get_card()
+    if card:
+        from vox.lora import get_lora_path, get_trigger_word
+        if get_lora_path(card["name"]):
+            trigger = get_trigger_word(card["name"])
+
     parts = []
+    if trigger:
+        parts.append(trigger)
     if appearance:
         parts.append(appearance)
     if scene:
         parts.append(scene)
+    if random_additions:
+        parts.append(", ".join(random_additions))
     if style:
         parts.append(style)
 
@@ -248,6 +361,16 @@ _add_pattern(
     lambda m, t: {"url": _extract_url(t)},
     "Let me fetch that for you...",
 )
+# Map / satellite / location requests — BEFORE image gen so real addresses
+# don't get routed to AI image generation.
+_add_pattern(
+    r"\b(satellite|aerial|map|street\s*view|bird.?s?\s*eye|top\s*down)\s*(view|image|photo|picture|map)?\s*(of|for)?\b"
+    r"|\b(directions|navigate|route)\s*(to|from)\b"
+    r"|\b(show|get|pull\s*up|find)\s+(me\s+)?(a\s+)?(map|satellite|aerial)\b",
+    "get_map",
+    lambda m, t: {"location": _extract_location(t)},
+    "Let me pull up that location...",
+)
 # Selfie / persona-aware image triggers — HIGHEST PRIORITY for image generation.
 # Must come BEFORE email patterns so "send me a selfie" routes to generate_image first,
 # with send_email chained as secondary.
@@ -260,7 +383,11 @@ _add_pattern(
     r"|\b(send|email|mail|give)\s+me\s+a\s+(selfie|pic|picture|photo)"
     r"|\blet\s+me\s+see\s+you\b",
     "generate_image",
-    lambda m, t: {"prompt": _build_persona_prompt(t), "_selfie": True},
+    lambda m, t: {
+        "prompt": _build_persona_prompt(t),
+        "_selfie": True,
+        "_nsfw_unlocked": bool(re.search(r"\bohwx\s+\w+\b", t, re.IGNORECASE)),
+    },
     "Let me take a pic for you...",
 )
 # Email with explicit address (highest priority for email)
@@ -320,15 +447,15 @@ _add_pattern(
     lambda m, t: {"prompt": _extract_image_prompt(t)},
     "Let me generate that image for you...",
 )
-# NSFW body keywords + action verb — implicit image request that bypasses LLM
-# refusal.  "show me big titties" or "make a sexy blonde" etc.
+# Mature content + action verb — implicit image request routed to unrestricted model.
+# Uses same keyword list as _NSFW_KEYWORDS (loaded from config file).
 _add_pattern(
-    r"\b(show|give|make|get|draw|paint|create|generate)\b.*\b("
-    r"naked|nude|nsfw|topless|lingerie|bikini|sexy|seductive|erotic"
-    r"|tits|titties|boobs|breasts|ass|butt|pussy|blowjob|porn|hentai"
-    r"|bondage|fetish)\b",
+    r"\b(show|give|make|get|draw|paint|create|generate)\b.*" + _NSFW_KEYWORDS.pattern,
     "generate_image",
-    lambda m, t: {"prompt": _extract_image_prompt(t)},
+    lambda m, t: {
+        "prompt": _extract_image_prompt(t),
+        "_nsfw_unlocked": bool(re.search(r"\bohwx\s+\w+\b", t, re.IGNORECASE)),
+    },
     "Let me generate that image for you...",
 )
 # Generic "email/mail me" / "send me" (no address) — AFTER image patterns
@@ -397,13 +524,20 @@ def detect_all_intents(text: str) -> list[DetectedIntent]:
             seen.add(tool_name)
 
     # Suppress send_email when generate_image is primary and user didn't
-    # mention an explicit email address — "send me a selfie" means show it,
-    # not email it.
+    # explicitly request email delivery — "send me a selfie" means show it,
+    # not email it. But "email me a selfie" or "send in email" keeps it.
+    _explicit_email_request = re.compile(
+        r"\S+@\S+\.\S+"  # explicit address
+        r"|\b(in|via|by|through)\s+e?-?mail\b"  # "in email", "via email"
+        r"|^(email|mail)\s+me\b"  # starts with "email me"
+        r"|\bemail\s+(me|it|this|that)\b",  # "email me", "email it"
+        re.IGNORECASE,
+    )
     if (
         intents
         and intents[0].tool_name == "generate_image"
         and any(i.tool_name == "send_email" for i in intents)
-        and not re.search(r"\S+@\S+\.\S+", text)
+        and not _explicit_email_request.search(text)
     ):
         intents = [i for i in intents if i.tool_name != "send_email"]
 
@@ -433,6 +567,10 @@ _TOOL_VALIDATORS: dict[str, re.Pattern] = {
     ),
     "web_fetch": re.compile(
         r"\b(download|fetch|open|get|grab|pdf|page|url|link|site|website)\b|https?://\S+",
+        re.IGNORECASE,
+    ),
+    "get_map": re.compile(
+        r"\b(satellite|aerial|map|street\s*view|bird.?s?\s*eye|top\s*down|directions|navigate|route|address)\b",
         re.IGNORECASE,
     ),
     "send_email": re.compile(
@@ -544,8 +682,34 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_map",
+            "description": "Get a real satellite or map image of a location/address. Use for addresses, places, directions, 'satellite view of', 'map of'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "Address or place name to look up",
+                    },
+                    "map_type": {
+                        "type": "string",
+                        "description": "Map type: satellite, roadmap, terrain, hybrid",
+                        "enum": ["satellite", "roadmap", "terrain", "hybrid"],
+                    },
+                    "zoom": {
+                        "type": "integer",
+                        "description": "Zoom level (1=world, 18=street, 20=building)",
+                    },
+                },
+                "required": ["location"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_image",
-            "description": "Generate an image from a text prompt using Stable Diffusion.",
+            "description": "Generate an AI image from a text prompt using Stable Diffusion. Do NOT use for real locations or addresses — use get_map instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -829,6 +993,14 @@ def _send_email(
             msg.attach(MIMEText(body))
 
             for filepath in attachment_list:
+                # Security: restrict attachments to DOWNLOADS_DIR to prevent path traversal
+                from vox.config import DOWNLOADS_DIR as _dl_dir
+                resolved = os.path.realpath(filepath)
+                downloads_real = os.path.realpath(str(_dl_dir))
+                if not resolved.startswith(downloads_real):
+                    warnings.append(f"Attachment outside downloads dir, blocked: {filepath}")
+                    log.warning("BLOCKED attachment path traversal: %s → %s", filepath, resolved)
+                    continue
                 if not os.path.isfile(filepath):
                     warnings.append(f"Attachment not found, skipped: {filepath}")
                     continue
@@ -882,6 +1054,62 @@ def _send_email(
         return f"Failed to send email: {e}"
 
 
+@_register("get_map")
+def _get_map(location: str = "", map_type: str = "satellite", zoom: int = 18, **kwargs) -> str:
+    """Fetch a real map/satellite image for a location using Google Maps Static API.
+
+    Falls back to generating a clickable Google Maps link if no API key is set.
+    """
+    import urllib.parse
+    import urllib.request
+
+    from vox.config import DOWNLOADS_DIR, GOOGLE_MAPS_API_KEY
+
+    if not location:
+        return "No location provided."
+
+    # Generate the Google Maps URL the user can always click
+    maps_url = f"https://www.google.com/maps/search/{urllib.parse.quote(location)}/@?t=k"
+
+    if not GOOGLE_MAPS_API_KEY:
+        log.info("get_map: no API key, returning Google Maps link")
+        return (
+            f"Google Maps link for '{location}': {maps_url}\n"
+            f"(Set GOOGLE_MAPS_API_KEY in .env for inline satellite images)"
+        )
+
+    # Fetch static map image from Google Maps API
+    params = urllib.parse.urlencode({
+        "center": location,
+        "zoom": zoom,
+        "size": "1024x1024",
+        "maptype": map_type,  # satellite, roadmap, terrain, hybrid
+        "key": GOOGLE_MAPS_API_KEY,
+    })
+    api_url = f"https://maps.googleapis.com/maps/api/staticmap?{params}"
+
+    try:
+        req = urllib.request.Request(api_url)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            img_data = resp.read()
+            content_type = resp.headers.get("Content-Type", "")
+
+        if "image" not in content_type:
+            log.warning("get_map: unexpected content type: %s", content_type)
+            return f"Map API returned unexpected content. Google Maps link: {maps_url}"
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"vox_map_{ts}.png"
+        filepath = DOWNLOADS_DIR / filename
+        filepath.write_bytes(img_data)
+        log.info("Map image saved: %s (%d KB)", filepath, len(img_data) // 1024)
+        return f"Map image saved to {filename}\nGoogle Maps: {maps_url}"
+
+    except Exception as e:
+        log.exception("get_map failed: %s", e)
+        return f"Map fetch failed: {e}\nGoogle Maps link: {maps_url}"
+
+
 @_register("web_fetch")
 def _web_fetch(url: str = "", **kwargs) -> str:
     """Fetch a URL: return text for HTML, save file for PDFs."""
@@ -893,6 +1121,16 @@ def _web_fetch(url: str = "", **kwargs) -> str:
         return "No URL provided."
     if not re.match(r"https?://", url):
         return f"Invalid URL: {url}"
+
+    # Security: block SSRF to internal/private networks
+    from urllib.parse import urlparse
+    _parsed = urlparse(url)
+    _host = _parsed.hostname or ""
+    _BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "metadata.google.internal"}
+    if _host in _BLOCKED_HOSTS or _host.startswith(("10.", "192.168.", "169.254.")):
+        return f"Blocked: cannot fetch internal/private URLs ({_host})"
+    if _host.startswith("172.") and 16 <= int(_host.split(".")[1]) <= 31:
+        return f"Blocked: cannot fetch internal/private URLs ({_host})"
 
     try:
         _fetch_headers = {
@@ -914,7 +1152,7 @@ def _web_fetch(url: str = "", **kwargs) -> str:
             filepath = DOWNLOADS_DIR / filename
             filepath.write_bytes(data)
             size_kb = len(data) / 1024
-            return f"PDF saved to {filename} ({size_kb:.1f} KB)"
+            return f"PDF saved to {filepath} ({size_kb:.1f} KB)"
         else:
             # HTML or other text — strip tags and return text
             text = data.decode("utf-8", errors="replace")
@@ -930,22 +1168,22 @@ def _web_fetch(url: str = "", **kwargs) -> str:
         return f"Fetch failed: {e}"
 
 
-_NSFW_KEYWORDS = re.compile(
-    r"\b(naked|nude|nsfw|topless|lingerie|underwear|bikini|sexy|seductive"
-    r"|erotic|sensual|provocative|undress|strip|bare|exposed"
-    r"|tits|titties|boobs|breasts|ass|butt|pussy|dick|cock|penis"
-    r"|blowjob|handjob|porn|hentai|bondage|fetish|orgasm|cum)\b",
-    re.IGNORECASE,
-)
 
 
-def _should_use_nsfw_model(prompt: str, selfie: bool) -> bool:
-    """Determine if a request should route to the NSFW-capable model."""
+def _should_use_nsfw_model(prompt: str, selfie: bool, nsfw_unlocked: bool = False) -> bool:
+    """Determine if a request should route to the NSFW-capable model.
+
+    NSFW is only enabled when the user includes the LoRA trigger word (easter egg).
+    Without it, all output stays SFW regardless of what is requested.
+    """
     from vox.config import IMAGE_NSFW_FILTER
     # If NSFW filter is on, never use NSFW model
     if IMAGE_NSFW_FILTER.lower() != "off":
         return False
-    # Selfie/persona requests always use NSFW model (unrestricted assistant)
+    # Easter egg: trigger word required to unlock NSFW
+    if not nsfw_unlocked:
+        return False
+    # Selfie/persona requests with unlock → NSFW model
     if selfie:
         return True
     # Check for NSFW keywords in the prompt
@@ -978,15 +1216,29 @@ def _get_single_file_url(model_id: str) -> str | None:
         return None
 
 
+# Pipeline cache — avoid reloading ~8s model load on every request
+_pipeline_cache: dict[str, object] = {}  # key: "model_id[:lora_path]" → pipeline
+
+
 def _load_pipeline(pipeline_cls, model_id: str, dtype):
     """Load a diffusers pipeline, auto-detecting single-file vs diffusers-format checkpoints."""
     if _is_single_file_checkpoint(model_id):
         url = _get_single_file_url(model_id)
         if url:
             log.info("Single-file checkpoint detected, using from_single_file: %s", url)
-            return pipeline_cls.from_single_file(url, torch_dtype=dtype)
+            from vox.config import IMAGE_NSFW_FILTER
+            sf_kwargs = {"torch_dtype": dtype}
+            if IMAGE_NSFW_FILTER.lower() == "off":
+                sf_kwargs["safety_checker"] = None
+                sf_kwargs["requires_safety_checker"] = False
+            return pipeline_cls.from_single_file(url, **sf_kwargs)
     # Standard diffusers format
     pipe_kwargs = {"torch_dtype": dtype}
+    # Disable safety checker when NSFW filter is off
+    from vox.config import IMAGE_NSFW_FILTER
+    if IMAGE_NSFW_FILTER.lower() == "off":
+        pipe_kwargs["safety_checker"] = None
+        pipe_kwargs["requires_safety_checker"] = False
     if "stabilityai" in model_id.lower():
         pipe_kwargs["variant"] = "fp16"
         pipe_kwargs["use_safetensors"] = True
@@ -1002,7 +1254,8 @@ def _load_pipeline(pipeline_cls, model_id: str, dtype):
 
 
 @_register("generate_image")
-def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **kwargs) -> str:
+def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False,
+                    _nsfw_unlocked: bool = False, **kwargs) -> str:
     """Generate an image using dual-model routing: SDXL for SFW, Juggernaut for NSFW/persona."""
     from vox.config import (
         DOWNLOADS_DIR,
@@ -1019,15 +1272,16 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
         return "No image prompt provided."
 
     # For selfie requests, the prompt is already built by _build_persona_prompt.
+    # Reinforce gender to prevent SDXL from generating the wrong sex.
     if _selfie:
-        full_prompt = prompt
+        full_prompt = f"1girl, solo, female, {prompt}"
     elif style:
         full_prompt = f"{prompt}, {style}"
     else:
         full_prompt = prompt
 
     # Dual-model routing: NSFW/persona → Juggernaut, SFW → SDXL base
-    use_nsfw = _should_use_nsfw_model(full_prompt, _selfie)
+    use_nsfw = _should_use_nsfw_model(full_prompt, _selfie, _nsfw_unlocked)
     model_id = IMAGE_MODEL_NSFW if use_nsfw else IMAGE_MODEL
     log.info("generate_image: prompt=%r, selfie=%s, nsfw_route=%s, model=%s",
              prompt, _selfie, use_nsfw, model_id)
@@ -1043,25 +1297,65 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
     # Both Juggernaut and SDXL base use StableDiffusionXLPipeline
     is_sdxl = "xl" in model_id.lower() or "sdxl" in model_id.lower() or "juggernaut" in model_id.lower()
 
-    try:
-        if is_sdxl:
-            from diffusers import StableDiffusionXLPipeline
-            log.info("Loading SDXL pipeline: %s", model_id)
-            pipe = _load_pipeline(StableDiffusionXLPipeline, model_id, torch.float16)
-        else:
-            from diffusers import StableDiffusionPipeline
-            log.info("Loading SD 1.5 pipeline: %s", model_id)
-            pipe_kwargs = {
-                "torch_dtype": torch.float16,
-            }
-            if IMAGE_NSFW_FILTER.lower() == "off":
-                log.info("NSFW safety checker disabled")
-                pipe_kwargs["safety_checker"] = None
-            pipe = StableDiffusionPipeline.from_pretrained(model_id, **pipe_kwargs)
+    # Determine LoRA path for selfie requests
+    lora_dir = None
+    if _selfie:
+        from pathlib import Path
+        from vox.lora import get_lora_path
+        from vox.persona import get_card
+        card = get_card()
+        if card:
+            lora_dir = get_lora_path(card["name"])
 
-        pipe = pipe.to("cuda")
-        pipe.enable_attention_slicing()
-        log.info("Pipeline loaded and moved to CUDA")
+    # Build cache key — same model+lora combo reuses the loaded pipeline
+    cache_key = f"{model_id}:{lora_dir or ''}"
+
+    try:
+        if cache_key in _pipeline_cache:
+            pipe = _pipeline_cache[cache_key]
+            log.info("Using cached pipeline: %s", cache_key)
+        else:
+            from pathlib import Path
+            if is_sdxl:
+                from diffusers import StableDiffusionXLPipeline
+                log.info("Loading SDXL pipeline: %s", model_id)
+                pipe = _load_pipeline(StableDiffusionXLPipeline, model_id, torch.float16)
+            else:
+                from diffusers import StableDiffusionPipeline
+                log.info("Loading SD 1.5 pipeline: %s", model_id)
+                pipe_kwargs = {
+                    "torch_dtype": torch.float16,
+                }
+                if IMAGE_NSFW_FILTER.lower() == "off":
+                    log.info("NSFW safety checker disabled")
+                    pipe_kwargs["safety_checker"] = None
+                pipe = StableDiffusionPipeline.from_pretrained(model_id, **pipe_kwargs)
+
+            pipe = pipe.to("cuda")
+            pipe.enable_attention_slicing()
+            log.info("Pipeline loaded and moved to CUDA")
+
+            # Auto-load LoRA if trained for this persona
+            if lora_dir:
+                try:
+                    lora_unet = Path(lora_dir) / "unet"
+                    if lora_unet.exists():
+                        from peft import PeftModel
+                        pipe.unet = PeftModel.from_pretrained(
+                            pipe.unet, str(lora_unet), adapter_name="persona",
+                        )
+                        pipe.unet.set_adapter("persona")
+                        log.info("LoRA loaded via PEFT from %s", lora_unet)
+                    else:
+                        # Fallback: try diffusers loading for non-PEFT LoRAs
+                        pipe.load_lora_weights(str(lora_dir))
+                        pipe.fuse_lora(lora_scale=0.8)
+                        log.info("LoRA loaded via diffusers from %s", lora_dir)
+                except Exception as e:
+                    log.warning("Failed to load LoRA: %s", e)
+
+            _pipeline_cache[cache_key] = pipe
+            log.info("Pipeline cached: %s", cache_key)
 
         # Split long prompts for SDXL dual encoder — subject in prompt,
         # style/quality in prompt_2 (each gets 77 tokens)
@@ -1080,9 +1374,14 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False, **
                 prompt_2 = full_prompt[split_idx:]
                 log.info("Split prompt for SDXL dual encoder: p1=%d chars, p2=%d chars", len(prompt_1), len(prompt_2))
 
-        log.info("Generating image: %r (negative: %r)", prompt_1[:120], IMAGE_NEGATIVE_PROMPT[:60])
+        # Selfie negative prompt: add male-exclusion terms to prevent wrong gender
+        neg_prompt = IMAGE_NEGATIVE_PROMPT or ""
+        if _selfie:
+            male_neg = "male, man, boy, masculine, male body, male anatomy"
+            neg_prompt = f"{male_neg}, {neg_prompt}" if neg_prompt else male_neg
+        log.info("Generating image: %r (negative: %r)", prompt_1[:120], neg_prompt[:80])
         gen_kwargs = {
-            "negative_prompt": IMAGE_NEGATIVE_PROMPT or None,
+            "negative_prompt": neg_prompt or None,
         }
         if prompt_2 and is_sdxl:
             gen_kwargs["prompt_2"] = prompt_2

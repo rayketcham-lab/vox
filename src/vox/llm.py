@@ -16,7 +16,7 @@ import ollama
 
 log = logging.getLogger(__name__)
 
-from vox.config import OLLAMA_HOST, OLLAMA_MODEL, VISION_MODEL
+from vox.config import OLLAMA_CHAT_MODEL, OLLAMA_HOST, OLLAMA_MODEL, VISION_MODEL
 from vox.persona import build_system_prompt
 from vox.tools import (
     TOOL_DEFINITIONS,
@@ -59,6 +59,7 @@ def chat(
         Full response text.
     """
     model = model_override or OLLAMA_MODEL
+    chat_model = OLLAMA_CHAT_MODEL or model  # personality model for pure conversation
 
     # Check for user corrections/preferences before processing
     from vox.preferences import add_rule, detect_correction
@@ -66,6 +67,75 @@ def chat(
     if correction:
         add_rule(correction, user_message)
         log.info("Learned user preference: %s", correction)
+
+    # Check for reminder/timer commands
+    from vox.reminders import (
+        add_reminder,
+        cancel_reminder,
+        detect_reminder_intent,
+        list_reminders,
+    )
+    rem_intent = detect_reminder_intent(user_message)
+    if rem_intent:
+        action = rem_intent["action"]
+        if action == "set":
+            rem_result = add_reminder(rem_intent["message"], rem_intent["minutes"])
+        elif action == "list":
+            rem_result = list_reminders()
+        else:
+            rem_result = cancel_reminder(rem_intent.get("keyword", "all"))
+        log.info("Reminder %s: %s", action, rem_result)
+        _history.append({"role": "user", "content": user_message})
+        _history.append({"role": "tool", "content": f"[Reminder] {rem_result}"})
+        while len(_history) > MAX_HISTORY:
+            _history.pop(0)
+        response = _chat_standard(chat_model, on_chunk)
+        _history.append({"role": "assistant", "content": response})
+        return response
+
+    # Check for memory commands (remember/forget/recall)
+    from vox.memory import detect_memory_intent, forget, recall, remember
+    mem_intent = detect_memory_intent(user_message)
+    if mem_intent:
+        action = mem_intent["action"]
+        data = mem_intent["data"]
+        if action == "remember":
+            mem_result = remember(data)
+        elif action == "forget":
+            mem_result = forget(data)
+        else:
+            mem_result = recall(data)
+        log.info("Memory %s: %s → %s", action, data, mem_result)
+        # Let the LLM respond naturally with the memory result as context
+        _history.append({"role": "user", "content": user_message})
+        _history.append({"role": "tool", "content": f"[Memory] {mem_result}"})
+        while len(_history) > MAX_HISTORY:
+            _history.pop(0)
+        response = _chat_standard(chat_model, on_chunk)
+        _history.append({"role": "assistant", "content": response})
+        return response
+
+    # Check for todo list commands
+    from vox.todos import add_todo, complete_todo, detect_todo_intent, list_todos, remove_todo
+    todo_intent = detect_todo_intent(user_message)
+    if todo_intent:
+        action = todo_intent["action"]
+        if action == "add":
+            todo_result = add_todo(todo_intent["task"])
+        elif action == "list":
+            todo_result = list_todos()
+        elif action == "complete":
+            todo_result = complete_todo(todo_intent["keyword"])
+        else:
+            todo_result = remove_todo(todo_intent.get("keyword", "all"))
+        log.info("Todo %s: %s", action, todo_result)
+        _history.append({"role": "user", "content": user_message})
+        _history.append({"role": "tool", "content": f"[Todo] {todo_result}"})
+        while len(_history) > MAX_HISTORY:
+            _history.pop(0)
+        response = _chat_standard(chat_model, on_chunk)
+        _history.append({"role": "assistant", "content": response})
+        return response
 
     _history.append({"role": "user", "content": user_message})
     while len(_history) > MAX_HISTORY:
@@ -78,11 +148,46 @@ def chat(
         log.info("Routing to concurrent tool path: %s", [i.tool_name for i in intents])
         response = _chat_with_concurrent_tool(model, intents, on_chunk)
     else:
-        log.info("Routing to standard LLM chat (no intents detected)")
-        response = _chat_standard(model, on_chunk)
+        # Check if this should escalate to Claude for complex tasks
+        from vox.escalate import should_escalate
+        if should_escalate(user_message):
+            log.info("Escalating to Claude API for complex task")
+            response = _chat_with_claude(user_message, on_chunk)
+        else:
+            log.info("Routing to chat model (%s) for conversation", chat_model)
+            response = _chat_standard(chat_model, on_chunk)
+
+    # Check for unimplemented feature requests → auto-create GitHub issue
+    from vox.auto_issue import should_create_issue
+    if should_create_issue(user_message, response):
+        from vox.auto_issue import create_feature_issue
+        issue_url = create_feature_issue(user_message, f"LLM response: {response[:200]}")
+        if issue_url:
+            log.info("Auto-created issue: %s", issue_url)
 
     _history.append({"role": "assistant", "content": response})
     return response
+
+
+def _chat_with_claude(
+    user_message: str,
+    on_chunk: callable | None,
+) -> str:
+    """Escalate to Claude API for complex tasks. Falls back to local LLM on failure."""
+    from vox.escalate import escalate_to_claude
+
+    system = build_system_prompt()
+    result = escalate_to_claude(user_message, _history, system)
+
+    if result:
+        if on_chunk:
+            on_chunk(result)
+        log.info("Claude response (%d chars): %s", len(result), result[:200])
+        return result
+
+    # Fallback to local LLM if Claude fails
+    log.warning("Claude escalation failed — falling back to local LLM")
+    return _chat_standard(OLLAMA_MODEL, on_chunk)
 
 
 def _chat_with_concurrent_tool(
@@ -131,21 +236,30 @@ def _chat_with_concurrent_tool(
             if not args.get("subject"):
                 if primary.tool_name == "generate_image":
                     args["subject"] = "Photo from VOX"
+                elif primary.tool_name == "get_map":
+                    args["subject"] = "Map from VOX"
                 else:
                     args["subject"] = "VOX"
             if not args.get("body"):
                 args["body"] = tool_result
-            # Attach generated image file if chaining from generate_image
-            if primary.tool_name == "generate_image":
-                import re as _re
-                from vox.config import DOWNLOADS_DIR
-                path_match = _re.search(r"saved to (.+\.png)", tool_result)
-                if path_match:
-                    fname = path_match.group(1)
-                    # Resolve to full path if only filename
-                    fpath = Path(fname) if Path(fname).is_absolute() else DOWNLOADS_DIR / fname
-                    args["attachments"] = [str(fpath)]
+            # Attach files from primary tool result (images, maps, PDFs)
+            import re as _re
+            from vox.config import DOWNLOADS_DIR
+            attached = []
+            # Find all saved files in the tool result
+            for path_match in _re.finditer(r"saved to (\S+\.(?:png|pdf|jpg|jpeg))", tool_result):
+                fname = path_match.group(1)
+                fpath = Path(fname) if Path(fname).is_absolute() else DOWNLOADS_DIR / fname
+                if fpath.exists():
+                    attached.append(str(fpath))
+            if attached:
+                args["attachments"] = attached
+                if primary.tool_name == "generate_image":
                     args["body"] = "Here's the image you requested."
+                elif primary.tool_name == "get_map":
+                    args["body"] = "Here's the map you requested."
+                else:
+                    args["body"] = "See attached file."
 
         log.info("Chained tool: %s args=%s", chained_intent.tool_name, {k: v for k, v in args.items() if k != "body"})
         chained_result = execute_tool(chained_intent.tool_name, args)
@@ -209,11 +323,18 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
     for round_num in range(max_tool_rounds):
         messages = [{"role": "system", "content": build_system_prompt()}, *_history]
 
-        response = client.chat(
-            model=model,
-            messages=messages,
-            tools=TOOL_DEFINITIONS if TOOL_DEFINITIONS else None,
-        )
+        try:
+            response = client.chat(
+                model=model,
+                messages=messages,
+                tools=TOOL_DEFINITIONS if TOOL_DEFINITIONS else None,
+            )
+        except ollama.ResponseError as e:
+            if "does not support tools" in str(e):
+                log.warning("Model %s does not support tools — falling back to plain chat", model)
+                response = client.chat(model=model, messages=messages, tools=None)
+            else:
+                raise
 
         msg = response["message"]
 

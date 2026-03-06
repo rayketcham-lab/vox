@@ -19,6 +19,54 @@ CI runs TruffleHog, pattern scanning for secrets, IP addresses, and blocks
 - **Audio**: sounddevice + numpy for capture/playback
 - **GPU**: RTX 3090 (24GB VRAM), CUDA, torch.float16
 
+---
+
+## Context Window Management — MANDATORY
+
+### Sentinel Protocol
+No background watchdog — YOU are the only process. Full protocol: `.claude/agents/sentinel.md`
+
+**Checkpoints**: Before/after tasks, on role switch, after large outputs, every 5 exchanges.
+**Heuristics**: <10 tools = green, 10-25 = yellow, 25-40 = orange, 40+ = red compact NOW.
+**If asked about Sentinel**: Execute status check, don't explain.
+
+**Session Continuity — NON-NEGOTIABLE**: On compact or exit, ALWAYS update:
+1. **MEMORY.md** — task, file paths, what's done/remains, decisions, `## Task Status:` line
+2. **CLAUDE.md `## Session State`** (if exists) — current task, files modified, remaining work
+
+Do NOT rewrite CLAUDE.md sections outside `## Session State`. On session start, check MEMORY.md for previous state.
+
+---
+
+## Autonomous Work Mode
+
+Work autonomously. Don't narrate or ask permission — just do the work.
+
+**Decision points**: Use AskUserQuestion with 2-4 concrete options, mark recommended with "(Recommended)".
+**Don't ask**: "Should I proceed?" / "Is this okay?" — just do it or present specific options.
+**Task Status** in MEMORY.md: `IN_PROGRESS`, `TASK_COMPLETE`, or `BLOCKED`.
+
+---
+
+## Team Agent Architecture
+
+Seven-agent model. Agent details and workflow recipes: see `memory/project-reference.md`.
+Agents: Architect, Builder, Tester, SecOps, DevOps, Verifier, Simplifier. Sentinel is embedded discipline, not separate.
+
+**Key rules**:
+- Verification-first: Builder → Verifier → then review. Nothing merges unverified.
+- SecOps has veto on security. Architect has veto on design/API.
+- Builder defers to Tester on test adequacy.
+
+---
+
+## Project Standards
+
+- No warnings in CI. Error handling mandatory. Functions >50 lines → decompose.
+- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `security:`
+- No secrets in code. Input validation at trust boundaries. Dependencies audited before adoption.
+- New features/bug fixes require tests. Security code requires adversarial tests.
+
 ## Conventions
 - Use `pyproject.toml` for project metadata and dependencies
 - Use `ruff` for linting
@@ -29,12 +77,18 @@ CI runs TruffleHog, pattern scanning for secrets, IP addresses, and blocks
 - Track all bugs/features as GitHub Issues
 - Tag releases with semver (v0.1.0, v0.2.0, etc.)
 
+## Language Notes
+
+- **Python**: 3.10+, `ruff`, `pathlib`, type hints on public APIs
+- **Shell**: quote vars, **NEVER `&&`/`||`/`;` in Bash tool calls** — use separate commands
+- Prefer `os.environ` over `python-dotenv` for production; dotenv for dev convenience only
+
 ## Directory Structure
 ```
 vox/
 ├── CLAUDE.md              # Project instructions (this file)
 ├── README.md              # Public-facing documentation
-├── LICENSE                 # MIT
+├── LICENSE                # MIT
 ├── SECURITY.md            # Security policy
 ├── CONTRIBUTING.md        # Contribution guidelines
 ├── pyproject.toml         # Dependencies and project metadata
@@ -66,7 +120,7 @@ vox/
 6. Pre-commit hook scans for common secret patterns
 
 ## Development Notes
-- Porcupine requires a free API key from https://console.picovoice.ai/
+- Porcupine requires a free API key from console.picovoice.ai
 - Ollama must be running locally (`ollama serve`)
 - Test with `python -m vox` after installing with `pip install -e .`
 - VRAM budget: ~2GB STT + ~2GB TTS + ~10-15GB LLM = fits in 24GB

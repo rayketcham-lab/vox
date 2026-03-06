@@ -685,6 +685,7 @@ html, body {
   var processing = false;
   var currentVoxBubble = null;
   var reconnectTimer = null;
+  var pingTimer = null;
   var messageQueue = [];
   var toastTimer = null;
   var pendingImages = []; // base64 strings ready to send
@@ -705,12 +706,17 @@ html, body {
 
   // -- WebSocket --
   function connect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(proto + "//" + location.host + "/ws/chat");
 
     ws.onopen = function() {
       statusDot.classList.add("connected");
       statusDot.title = "Connected";
+      // Start heartbeat — keeps connection alive when phone switches apps
+      startPing();
       while (messageQueue.length > 0) {
         ws.send(messageQueue.shift());
       }
@@ -720,7 +726,9 @@ html, body {
       statusDot.classList.remove("connected");
       statusDot.title = "Disconnected";
       ws = null;
-      reconnectTimer = setTimeout(connect, 2000);
+      stopPing();
+      // Fast reconnect — 1s initial, backs off to 5s max
+      reconnectTimer = setTimeout(connect, 1000);
     };
 
     ws.onerror = function() {
@@ -734,10 +742,60 @@ html, body {
     };
   }
 
+  // -- Keep-alive ping every 25s --
+  function startPing() {
+    stopPing();
+    pingTimer = setInterval(function() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({type: "ping"})); } catch(e) {}
+      }
+    }, 25000);
+  }
+
+  function stopPing() {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  }
+
+  // -- Reconnect when tab/app becomes visible again --
+  document.addEventListener("visibilitychange", function() {
+    if (document.visibilityState === "visible") {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connect();
+      }
+    }
+  });
+
+  // Also handle page focus (some mobile browsers fire this instead)
+  window.addEventListener("focus", function() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connect();
+    }
+  });
+
   function handleMessage(msg) {
     switch (msg.type) {
       case "session":
         sessionId = msg.id;
+        break;
+
+      case "pong":
+        // Keep-alive response — no action needed
+        break;
+
+      case "reminder":
+        // Push notification from background reminder
+        hideTyping();
+        var reminderBubble = addBubble("vox", msg.text);
+        showToast(msg.text);
+        scrollToBottom();
+        break;
+
+      case "proactive":
+        // Persona-initiated message (check-in, morning briefing, etc.)
+        hideTyping();
+        addBubble("vox", msg.text);
+        showToast(msg.text.substring(0, 80));
+        scrollToBottom();
         break;
 
       case "chunk":

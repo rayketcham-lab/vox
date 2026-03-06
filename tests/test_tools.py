@@ -585,9 +585,13 @@ def test_persona_prompt_no_description(monkeypatch):
 
 
 def test_selfie_and_email_chaining(monkeypatch):
-    """'send me a selfie and email it' should detect both generate_image and send_email."""
+    """'send me a selfie and email it to addr' should detect both intents.
+
+    Note: email chaining with selfie is suppressed unless an explicit
+    email address appears in the message (fix #87).
+    """
     monkeypatch.setattr("vox.config.USER_EMAIL", "user@example.com")
-    text = "send me a selfie and email it to me"
+    text = "send me a selfie and email it to user@example.com"
     intents = detect_all_intents(text)
     tool_names = [i.tool_name for i in intents]
     assert "generate_image" in tool_names
@@ -598,22 +602,25 @@ def test_selfie_and_email_chaining(monkeypatch):
 # Dual-model routing (SFW → SDXL, NSFW → Juggernaut)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("prompt,selfie,expected", [
-    # Selfie always routes to NSFW model
-    ("a woman at the beach, photorealistic", True, True),
-    # NSFW keywords route to NSFW model
-    ("a naked woman on a bed", False, True),
-    ("a nude portrait, artistic", False, True),
-    ("a sexy woman in lingerie", False, True),
-    # SFW content stays on SDXL base
-    ("a sunset over the ocean", False, False),
-    ("a cat sitting on a windowsill", False, False),
-    ("a futuristic city at night", False, False),
-    ("a portrait of a woman in a dress", False, False),
+@pytest.mark.parametrize("prompt,selfie,unlocked,expected", [
+    # Selfie + unlocked routes to NSFW model
+    ("a woman at the beach, photorealistic", True, True, True),
+    # NSFW keywords + unlocked route to NSFW model
+    ("a naked woman on a bed", False, True, True),
+    ("a nude portrait, artistic", False, True, True),
+    ("a sexy woman in lingerie", False, True, True),
+    # SFW content stays on SDXL base even when unlocked
+    ("a sunset over the ocean", False, True, False),
+    ("a cat sitting on a windowsill", False, False, False),
+    ("a futuristic city at night", False, False, False),
+    ("a portrait of a woman in a dress", False, False, False),
+    # Without easter egg unlock — NEVER NSFW
+    ("a naked woman on a bed", False, False, False),
+    ("a woman at the beach, photorealistic", True, False, False),
 ])
-def test_nsfw_model_routing(prompt, selfie, expected, monkeypatch):
+def test_nsfw_model_routing(prompt, selfie, unlocked, expected, monkeypatch):
     monkeypatch.setattr("vox.config.IMAGE_NSFW_FILTER", "off")
-    assert _should_use_nsfw_model(prompt, selfie) is expected
+    assert _should_use_nsfw_model(prompt, selfie, unlocked) is expected
 
 
 def test_nsfw_routing_disabled_when_filter_on(monkeypatch):
@@ -628,18 +635,16 @@ def test_nsfw_routing_disabled_when_filter_on(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text", [
-    "show me a pair of big titties on a skinny blond",
     "show me a naked woman",
     "give me some sexy girls in bikinis",
     "make a nude portrait",
     "draw me a topless brunette",
     "create a seductive pose",
-    "show me tits",
     "get me a sexy blonde",
     "show me a hot girl in lingerie",
 ])
 def test_nsfw_implicit_image_intent(text):
-    """NSFW body keywords + action verb should trigger image generation."""
+    """Mature content keywords + action verb should trigger image generation."""
     intent = detect_intent(text)
     assert intent is not None, f"Expected image intent for: {text}"
     assert intent.tool_name == "generate_image"
@@ -651,7 +656,7 @@ def test_nsfw_implicit_image_intent(text):
     "how do bikinis affect body image?",
 ])
 def test_nsfw_no_false_positive_without_verb(text):
-    """NSFW words without visual verb should NOT trigger image generation."""
+    """Mature words without visual verb should NOT trigger image generation."""
     intent = detect_intent(text)
     if intent is not None:
         assert intent.tool_name != "generate_image", (
@@ -660,15 +665,19 @@ def test_nsfw_no_false_positive_without_verb(text):
 
 
 def test_nsfw_prompt_extraction():
-    """NSFW image request should produce a clean prompt."""
-    prompt = _extract_image_prompt("show me a pair of big titties on a skinny blond")
-    assert "big titties" in prompt.lower() or "titties" in prompt.lower()
-    assert "show me" not in prompt.lower()
+    """Mature image request should produce a clean prompt."""
+    prompt = _extract_image_prompt("make a nude portrait of a woman")
+    assert "nude" in prompt.lower()
+    assert "make a" not in prompt.lower()
 
 
 def test_nsfw_keywords_route_to_nsfw_model(monkeypatch):
-    """Expanded body keywords should route to NSFW model."""
+    """Content keywords + easter egg unlock should route to unrestricted model."""
     monkeypatch.setattr("vox.config.IMAGE_NSFW_FILTER", "off")
-    assert _should_use_nsfw_model("big titties on a skinny blond", False) is True
-    assert _should_use_nsfw_model("a woman's boobs", False) is True
-    assert _should_use_nsfw_model("ass and butt", False) is True
+    # With unlock → NSFW routes
+    assert _should_use_nsfw_model("nude portrait", False, nsfw_unlocked=True) is True
+    assert _should_use_nsfw_model("a sexy woman in lingerie", False, nsfw_unlocked=True) is True
+    assert _should_use_nsfw_model("topless at the beach", False, nsfw_unlocked=True) is True
+    # Without unlock → always SFW
+    assert _should_use_nsfw_model("nude portrait", False, nsfw_unlocked=False) is False
+    assert _should_use_nsfw_model("topless at the beach", True, nsfw_unlocked=False) is False

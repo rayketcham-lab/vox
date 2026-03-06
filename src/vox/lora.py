@@ -218,13 +218,38 @@ def auto_caption_images(persona_name: str, trigger_word: str | None = None) -> d
     }
 
 
+def get_trigger_word(persona_name: str) -> str:
+    """Get the trigger word for a persona's LoRA.
+
+    Returns the trigger word from training config, or the default 'ohwx <name>'.
+    """
+    paths = setup_training_dirs(persona_name)
+    config_path = paths["config"]
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        return config.get("trigger_word", f"ohwx {persona_name.lower()}")
+    return f"ohwx {persona_name.lower()}"
+
+
 def get_lora_path(persona_name: str) -> str | None:
     """Get the path to a trained LoRA for image generation.
 
+    Looks for diffusers-format LoRA directories (containing unet/ subfolder)
+    first, then falls back to loose .safetensors files.
     Returns None if no LoRA exists yet.
     """
     paths = setup_training_dirs(persona_name)
-    lora_files = sorted(paths["output"].glob("*.safetensors"), key=lambda p: p.stat().st_mtime, reverse=True)
+    output_dir = paths["output"]
+
+    # Check for diffusers-format LoRA dirs (e.g., ann_lora/unet/)
+    for subdir in sorted(output_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if subdir.is_dir() and (subdir / "unet").exists():
+            log.info("Found diffusers-format LoRA: %s", subdir)
+            return str(subdir)
+
+    # Fallback: loose .safetensors files
+    lora_files = sorted(output_dir.glob("*.safetensors"), key=lambda p: p.stat().st_mtime, reverse=True)
     if lora_files:
         return str(lora_files[0])
     return None
@@ -271,18 +296,19 @@ def train_lora(persona_name: str, on_progress: callable | None = None) -> dict:
                           f"  Images: {paths['training_images']}",
         }
 
-    # For now, return the config for manual training
-    # Full automated training loop is a larger feature (Issue #78)
-    return {
-        "status": "config_ready",
-        "config": config,
-        "caption_status": caption_status,
-        "image_count": status["image_count"],
-        "next_steps": [
-            f"1. Review captions in {paths['training_images']}",
-            f"2. Train with kohya_ss using config: {config_path}",
-            f"   OR run: vox --train-lora --persona {persona_name}",
-            f"3. LoRA will save to: {paths['output']}",
-            "4. Image generation will auto-load the LoRA for selfies.",
-        ],
-    }
+    # Run the actual training loop
+    from vox.train import train_lora as run_training
+
+    result = run_training(
+        persona_name=persona_name,
+        image_dir=str(paths["training_images"]),
+        output_dir=str(paths["output"]),
+        epochs=config.get("epochs", 3),
+        learning_rate=config.get("learning_rate", 1e-4),
+        lora_rank=config.get("network_rank", 32),
+        lora_alpha=config.get("network_alpha", 16),
+        resolution=config.get("resolution", 1024),
+        batch_size=config.get("batch_size", 1),
+        on_progress=on_progress,
+    )
+    return result

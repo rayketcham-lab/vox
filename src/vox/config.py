@@ -23,9 +23,12 @@ Path(HF_HOME).mkdir(parents=True, exist_ok=True)
 PORCUPINE_ACCESS_KEY = os.environ.get("PORCUPINE_ACCESS_KEY", "")
 WAKE_WORD = "hey vox"
 
-# Ollama
+# Ollama — dual-model setup
+# OLLAMA_MODEL: primary model for tool calling + general chat
+# OLLAMA_CHAT_MODEL: personality model for pure conversation (optional, falls back to OLLAMA_MODEL)
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mythomax:13b")
+OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "")
 
 # Audio
 MIC_DEVICE_INDEX = int(os.environ.get("MIC_DEVICE_INDEX", -1))
@@ -82,6 +85,19 @@ VISION_MODEL = os.environ.get("VISION_MODEL", "llava")
 # Web UI
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")  # noqa: S104 — intentional LAN binding
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+WEB_AUTH_USER = os.environ.get("WEB_AUTH_USER", "")  # HTTP Basic Auth (optional)
+WEB_AUTH_PASS = os.environ.get("WEB_AUTH_PASS", "")  # leave empty to disable auth
+
+# Google Maps (optional — static map images for location requests)
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
+# Claude API (optional — escalation for complex tasks the local LLM can't handle)
+# Uses the cheapest model (Haiku) by default — pennies per request
+CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+# GitHub (optional — auto-create issues for unimplemented features)
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # e.g. "rayketcham-lab/vox"
 
 # Home Assistant (optional)
 HASS_URL = os.environ.get("HASS_URL", "")

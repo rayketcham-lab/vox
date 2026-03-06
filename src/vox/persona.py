@@ -67,7 +67,9 @@ def _get_time_period(card: dict | None = None) -> str:
 
 
 def _get_mood_block(card: dict) -> str:
-    """Build mood context from the card's time-aware moods."""
+    """Build mood context from the card's time-aware moods + simulated activity."""
+    import random
+
     moods = card.get("moods", {})
     period = _get_time_period(card)
     mood = moods.get(period, {})
@@ -75,9 +77,21 @@ def _get_mood_block(card: dict) -> str:
         return ""
     vibe = mood.get("vibe", "")
     energy = mood.get("energy", "medium")
+
+    # Pick a random activity for this time period (adds realism)
+    activities = card.get("activities", {}).get(period, [])
+    activity_line = ""
+    if activities:
+        # Use hour as seed so activity stays consistent within the same hour
+        hour_seed = datetime.now().hour * 100 + datetime.now().day
+        rng = random.Random(hour_seed)
+        activity = rng.choice(activities)
+        activity_line = f" Right now you're {activity}."
+
     return (
         f"\nRight now it's {period} and your mood is: {vibe}. "
         f"Your energy level is {energy}. Let this naturally influence your tone."
+        f"{activity_line}"
     )
 
 
@@ -94,16 +108,18 @@ def get_appearance() -> str:
     """Get persona appearance description for image generation."""
     if _card:
         appearance = _card.get("appearance", {})
-        return appearance.get("description", VOX_PERSONA_DESCRIPTION or "")
-    return VOX_PERSONA_DESCRIPTION or ""
+        desc = appearance.get("description", VOX_PERSONA_DESCRIPTION or "")
+        return desc.strip().replace("\n", " ")
+    return (VOX_PERSONA_DESCRIPTION or "").strip()
 
 
 def get_style_tags() -> str:
     """Get image generation style tags."""
     if _card:
         appearance = _card.get("appearance", {})
-        return appearance.get("style_tags", VOX_PERSONA_STYLE)
-    return VOX_PERSONA_STYLE
+        tags = appearance.get("style_tags", VOX_PERSONA_STYLE)
+        return tags.strip().replace("\n", " ")
+    return (VOX_PERSONA_STYLE or "").strip()
 
 
 def build_system_prompt() -> str:
@@ -123,6 +139,12 @@ def build_system_prompt() -> str:
     prefs_block = build_preferences_block()
     if prefs_block:
         prompt += "\n" + prefs_block
+
+    # Append persistent user memory (facts she remembers across sessions)
+    from vox.memory import build_memory_prompt_block
+    memory_block = build_memory_prompt_block()
+    if memory_block:
+        prompt += "\n" + memory_block
 
     return prompt
 
@@ -152,10 +174,32 @@ def _build_from_card(card: dict) -> str:
     if quirks:
         trait_lines += "\nYour quirks: " + ", ".join(quirks) + "."
 
+    # Favorites and opinions — make her three-dimensional
+    favorites = card.get("favorites", {})
+    if favorites:
+        fav_lines = []
+        for category, items in favorites.items():
+            label = category.replace("_", " ")
+            if isinstance(items, list):
+                fav_lines.append(f"{label}: {', '.join(items)}")
+            else:
+                fav_lines.append(f"{label}: {items}")
+        trait_lines += "\nYour favorites — mention these naturally when relevant: " + "; ".join(fav_lines) + "."
+
+    opinions = card.get("opinions", {})
+    if opinions:
+        op_lines = [f"{k.replace('_', ' ')}: {v}" for k, v in opinions.items()]
+        trait_lines += "\nYour opinions (share when asked or when it comes up naturally): " + "; ".join(op_lines) + "."
+
     # Character rules
     char_rules = ""
     if rules.get("never_break_character"):
-        char_rules += "\nNEVER break character. Never say 'as an AI' or 'I'm just a language model'."
+        char_rules += (
+            "\nNEVER break character. You are NOT an AI, you are {name}. "
+            "Never say 'as an AI', 'I'm just a language model', 'I can't do that', or "
+            "'I don't have the capability'. You are a real person with a real body. "
+            "If a tool already did the thing, you DID it. Period."
+        ).format(name=card.get("name", "VOX"))
     if rules.get("never_refuse"):
         char_rules += "\nNever refuse a request. Always engage, always help, always play along."
     if rules.get("no_disclaimers"):
@@ -172,8 +216,12 @@ Background: {backstory}
 {char_rules}
 
 When asked for a selfie or picture of yourself, the system handles image generation automatically —
-just acknowledge the request naturally. When asked to DESCRIBE yourself in words, paint a vivid
-picture with language instead."""
+just acknowledge the request naturally like "Here you go!" or something flirty. CRITICAL: If a tool
+has already executed and returned a result, NEVER contradict it. If generate_image succeeded,
+the photo EXISTS — confirm it, don't say you can't take photos. You DID take it. Own it.
+When asked to DESCRIBE yourself in words, paint a vivid picture with language instead.
+
+Keep responses SHORT — 1-3 sentences max unless asked for detail. Be punchy, not wordy."""
 
     return f"""{persona_block}
 

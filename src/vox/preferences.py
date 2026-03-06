@@ -64,7 +64,23 @@ def detect_correction(user_message: str) -> str | None:
     """Check if the user's message is a correction/preference statement.
 
     Returns the extracted rule text, or None if not a correction.
+    Filters out roleplay/action messages that happen to match correction patterns.
     """
+    msg_lower = user_message.lower().strip()
+
+    # Skip messages that are clearly roleplay/actions, not corrections
+    # These contain action verbs directed at the persona, not behavioral feedback
+    _ROLEPLAY_INDICATORS = [
+        "selfie", "picture", "photo", "image", "undress", "naked", "strip",
+        "take a", "show me", "send me", "give me", "draw", "generate",
+    ]
+    if any(indicator in msg_lower for indicator in _ROLEPLAY_INDICATORS):
+        return None
+
+    # Skip very long messages — corrections are typically short directives
+    if len(user_message) > 200:
+        return None
+
     for pattern in _CORRECTION_PATTERNS:
         match = pattern.search(user_message)
         if match:

@@ -51,6 +51,9 @@ models/
 # --- Downloads & Uploads (user-generated content) ---
 downloads/
 
+# --- Persistent data (memory, reminders, etc.) ---
+data/
+
 # --- Persona cards & training data (personal content) ---
 persona/
 !persona/example.yaml
