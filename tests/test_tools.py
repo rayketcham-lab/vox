@@ -1182,6 +1182,7 @@ def test_briefing_execution():
 
 def test_upscale_with_pil(tmp_path):
     """Test actual upscaling with PIL Lanczos fallback."""
+    pytest.importorskip("PIL", reason="Pillow not installed")
     from PIL import Image
     # Create a small test image
     img = Image.new("RGB", (64, 64), color="red")
