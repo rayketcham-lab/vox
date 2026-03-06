@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--model", type=str, default=None, help="Override Ollama model name")
     parser.add_argument("--web", action="store_true", help="Launch web UI instead of voice pipeline")
     parser.add_argument("--port", type=int, default=None, help="Port for web UI (default: 8080)")
+    parser.add_argument("--setup", action="store_true", help="Run interactive setup wizard")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -35,11 +36,24 @@ def main():
         from vox.persona import load_card
         load_card(VOX_PERSONA_CARD)
 
+    if args.setup:
+        from vox.setup import run_setup
+        run_setup()
+        return
+
     if args.list_devices:
         import sounddevice as sd
 
         print(sd.query_devices())
         return
+
+    # Auto-suggest setup on first run
+    from vox.config import PROJECT_ROOT
+    env_file = PROJECT_ROOT / ".env"
+    if not env_file.exists() and not args.setup:
+        print("No .env file found. Run 'vox --setup' to configure VOX.")
+        print("Or copy .env.example to .env and edit manually.")
+        print()
 
     if args.web:
         from vox.web import start_server

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import logging
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-
-import hmac
-import secrets
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -23,7 +22,32 @@ from vox.llm import _history, chat, chat_with_vision
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="VOX Web UI")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Startup/shutdown lifecycle for the FastAPI app."""
+    # --- Startup ---
+    from vox.config import VOX_PERSONA_CARD
+    if VOX_PERSONA_CARD:
+        from vox.persona import load_card
+        load_card(VOX_PERSONA_CARD)
+        log.info("Persona card loaded: %s", VOX_PERSONA_CARD)
+
+    # Start background loops
+    tasks = [
+        asyncio.create_task(_reminder_loop()),
+        asyncio.create_task(_proactive_loop()),
+        asyncio.create_task(_model_cleanup_loop()),
+    ]
+
+    yield
+
+    # --- Shutdown ---
+    for t in tasks:
+        t.cancel()
+
+
+app = FastAPI(title="VOX Web UI", lifespan=_lifespan)
 
 
 # --- HTTP Basic Auth middleware (optional — enabled when WEB_AUTH_USER is set) ---
@@ -87,6 +111,32 @@ async def list_images():
     return [{"filename": img.name, "url": f"/downloads/{img.name}"} for img in images]
 
 
+@app.get("/api/images/{filename}/thumb")
+async def image_thumbnail(filename: str):
+    """Return a 300px thumbnail of an image for the gallery grid."""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+    filepath = DOWNLOADS_DIR / filename
+    if not filepath.exists() or filepath.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+        return JSONResponse({"error": "Image not found"}, status_code=404)
+
+    # Check for cached thumbnail
+    thumb_dir = DOWNLOADS_DIR / ".thumbs"
+    thumb_dir.mkdir(exist_ok=True)
+    thumb_path = thumb_dir / filename
+    if not thumb_path.exists() or thumb_path.stat().st_mtime < filepath.stat().st_mtime:
+        try:
+            from PIL import Image
+            with Image.open(filepath) as img:
+                img.thumbnail((300, 300), Image.LANCZOS)
+                img.save(thumb_path, "PNG", optimize=True)
+        except Exception as e:
+            log.warning("Thumbnail generation failed for %s: %s", filename, e)
+            return FileResponse(filepath, media_type="image/png")
+
+    return FileResponse(thumb_path, media_type="image/png")
+
+
 @app.delete("/api/images/{filename}")
 async def delete_image(filename: str):
     """Delete a single image from downloads/."""
@@ -96,8 +146,33 @@ async def delete_image(filename: str):
     if not filepath.exists() or not filepath.suffix == ".png":
         return JSONResponse({"error": "Image not found"}, status_code=404)
     filepath.unlink()
+    # Clean up thumbnail if it exists
+    thumb_path = DOWNLOADS_DIR / ".thumbs" / filename
+    if thumb_path.exists():
+        thumb_path.unlink()
     log.info("Deleted image: %s", filename)
     return {"deleted": filename}
+
+
+# --- Model Manager Endpoints ---
+
+
+@app.get("/api/models")
+async def model_status():
+    """Return status of all registered models (loaded/idle/VRAM)."""
+    from vox import model_manager
+    return {
+        "models": model_manager.status(),
+        "vram_loaded_mb": model_manager.vram_loaded(),
+    }
+
+
+@app.post("/api/models/{name}/unload")
+async def unload_model(name: str):
+    """Force-unload a specific model to free VRAM."""
+    from vox import model_manager
+    model_manager.release(name, force=True)
+    return {"unloaded": name, "vram_loaded_mb": model_manager.vram_loaded()}
 
 
 # --- LoRA Training Endpoints ---
@@ -165,10 +240,32 @@ def _check_ws_auth(ws: WebSocket) -> bool:
     return False
 
 
+def _check_ws_origin(ws: WebSocket) -> bool:
+    """Validate WebSocket origin to prevent cross-site WebSocket hijacking."""
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True  # Non-browser clients (curl, etc.) don't send Origin
+    # Allow same-host connections (any port)
+    host = ws.headers.get("host", "")
+    from urllib.parse import urlparse
+    parsed = urlparse(origin)
+    origin_host = parsed.hostname or ""
+    expected_host = host.split(":")[0] if host else ""
+    # Allow localhost variants and same-host
+    localhost_aliases = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    if origin_host in localhost_aliases and expected_host in localhost_aliases:
+        return True
+    return origin_host == expected_host
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(ws: WebSocket):
     if not _check_ws_auth(ws):
         await ws.close(code=4001, reason="Unauthorized")
+        return
+    if not _check_ws_origin(ws):
+        log.warning("WebSocket rejected: origin mismatch (origin=%s)", ws.headers.get("origin", ""))
+        await ws.close(code=4003, reason="Origin not allowed")
         return
     await ws.accept()
 
@@ -231,9 +328,9 @@ def _find_generated_images(history: list[dict], before_len: int) -> list[str]:
     for entry in history[before_len:]:
         if entry.get("role") == "tool":
             content = entry.get("content", "")
-            # Match any "saved to <filename>.png" pattern (images, maps, etc.)
-            for match in re.finditer(r"saved to (\S+\.png)", content):
-                image_path = Path(match.group(1))
+            # Match vox_image_*.png and vox_map_*.png filenames anywhere in the text
+            for match in re.finditer(r"\bvox_(?:image|map)_\S+\.png\b", content):
+                image_path = Path(match.group(0).rstrip(","))
                 filenames.append(image_path.name)
     return filenames
 
@@ -273,6 +370,16 @@ async def _handle_training_upload(ws: WebSocket, data: dict):
     await ws.send_json({"type": "training_status", **status})
 
 
+async def _send_progress(ws: WebSocket, step: int, total: int):
+    """Push image generation progress to WebSocket client."""
+    if ws.client_state == WebSocketState.CONNECTED:
+        try:
+            pct = int(step / total * 100) if total else 0
+            await ws.send_json({"type": "progress", "step": step, "total": total, "pct": pct})
+        except Exception:
+            pass
+
+
 async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_images: list[str] | None = None):
     """Run chat() in a thread, streaming chunks back over WebSocket."""
     _SENTINEL = None
@@ -305,7 +412,37 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
     if uploaded_paths and ws.client_state == WebSocketState.CONNECTED:
         await ws.send_json({"type": "uploaded_images", "urls": uploaded_paths})
 
+    # Image generation progress — push step updates over WebSocket
+    def on_image_progress(step: int, total: int):
+        try:
+            loop.call_soon_threadsafe(
+                asyncio.ensure_future,
+                _send_progress(ws, step, total),
+            )
+        except Exception:
+            pass
+
+    # Image saved callback — push image inline immediately when saved
+    def on_image_saved(filename: str):
+        async def _send():
+            if ws.client_state == WebSocketState.CONNECTED:
+                try:
+                    await ws.send_json({
+                        "type": "image",
+                        "url": f"/downloads/{filename}",
+                        "filename": filename,
+                    })
+                except Exception:
+                    pass
+        try:
+            loop.call_soon_threadsafe(asyncio.ensure_future, _send())
+        except Exception:
+            pass
+
     def run_chat() -> str:
+        from vox import tools as _tools_mod
+        _tools_mod._image_progress_fn = on_image_progress
+        _tools_mod._image_saved_fn = on_image_saved
         session_history = _sessions[session_id]
         _history.clear()
         _history.extend(session_history)
@@ -320,6 +457,8 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
             else:
                 result = chat(user_text, on_chunk=on_chunk)
         finally:
+            _tools_mod._image_progress_fn = None
+            _tools_mod._image_saved_fn = None
             # Find any generated images in new history entries
             generated = _find_generated_images(_history, history_len_before)
             _sessions[session_id] = list(_history)
@@ -339,7 +478,8 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
                 # Flush remaining buffer — strip paths before sending
                 if _chunk_buffer:
                     flushed = re.sub(r"[A-Z]:\\[\w\\]+\.\w+", "", _chunk_buffer)
-                    flushed = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png", "", flushed, flags=re.IGNORECASE)
+                    flushed = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png",
+                        "", flushed, flags=re.IGNORECASE)
                     flushed = re.sub(r"\bvox_(?:image|map)_\S+\.png\b", "", flushed, flags=re.IGNORECASE)
                     flushed = re.sub(r"\s{2,}", " ", flushed)
                     if flushed.strip() and ws.client_state == WebSocketState.CONNECTED:
@@ -349,7 +489,8 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
             # Buffer until we have enough to detect/strip paths (drive letters need context)
             if len(_chunk_buffer) > 80 or chunk.endswith((".", "!", "?", "\n")):
                 cleaned = re.sub(r"[A-Z]:\\[\w\\]+\.\w+", "", _chunk_buffer)
-                cleaned = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"(?:saved?\s+(?:it\s+)?to|stored\s+(?:at|in)?)\s+\S+\.png",
+                    "", cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(r"\bvox_(?:image|map)_\S+\.png\b", "", cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(r"\s{2,}", " ", cleaned)
                 if cleaned.strip() and ws.client_state == WebSocketState.CONNECTED:
@@ -370,9 +511,9 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
     # then fallback to regex on the response text
     generated_images = _sessions.pop(f"{session_id}__images", [])
     if not generated_images:
-        # Fallback: check the response text
-        for match in re.finditer(r"saved to (\S+\.png)", full_response):
-            image_path = Path(match.group(1))
+        # Fallback: check the response text for vox_image/vox_map filenames
+        for match in re.finditer(r"\bvox_(?:image|map)_\S+\.png\b", full_response):
+            image_path = Path(match.group(0).rstrip(","))
             generated_images.append(image_path.name)
 
     # Send generated images inline BEFORE the done message
@@ -410,19 +551,6 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
     if ws.client_state == WebSocketState.CONNECTED:
         await ws.send_json({"type": "done", "text": clean_response})
 
-
-@app.on_event("startup")
-async def _startup():
-    """Load persona card and start background tasks on server startup."""
-    from vox.config import VOX_PERSONA_CARD
-    if VOX_PERSONA_CARD:
-        from vox.persona import load_card
-        load_card(VOX_PERSONA_CARD)
-        log.info("Persona card loaded: %s", VOX_PERSONA_CARD)
-
-    # Start background loops
-    asyncio.create_task(_reminder_loop())
-    asyncio.create_task(_proactive_loop())
 
 
 async def _reminder_loop():
@@ -478,9 +606,33 @@ async def _proactive_loop():
             log.exception("Proactive loop error")
 
 
+async def _model_cleanup_loop():
+    """Background loop that unloads idle models to free VRAM."""
+    from vox import model_manager
+
+    while True:
+        await asyncio.sleep(30)
+        try:
+            model_manager.cleanup_expired()
+        except Exception:
+            log.exception("Model cleanup error")
+
+
 def start_server(host: str | None = None, port: int | None = None):
     """Start the uvicorn server."""
     import uvicorn
+
+    # Configure logging to file + console so user can tail the log
+    import logging as _logging
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            _logging.StreamHandler(),
+            _logging.FileHandler(str(DOWNLOADS_DIR.parent / "vox_web.log"), encoding="utf-8"),
+        ],
+        force=True,
+    )
 
     uvicorn.run(
         app,
@@ -488,3 +640,7 @@ def start_server(host: str | None = None, port: int | None = None):
         port=port or WEB_PORT,
         log_level="info",
     )
+
+
+if __name__ == "__main__":
+    start_server()

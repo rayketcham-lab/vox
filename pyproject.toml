@@ -29,6 +29,7 @@ image = [
     "accelerate>=0.20.0",
     "safetensors",
     "Pillow",
+    "hf_xet>=1.0.0",
 ]
 lora = [
     "diffusers>=0.26.0",
@@ -38,9 +39,17 @@ lora = [
     "Pillow",
     "peft>=0.7.0",
     "bitsandbytes>=0.41.0",
+    "hf_xet>=1.0.0",
 ]
 claude = [
     "anthropic>=0.40.0",
+]
+memory = [
+    "chromadb>=1.0.0",
+    "sentence-transformers>=3.0.0",
+]
+mcp = [
+    "mcp>=1.0.0",
 ]
 web = [
     "fastapi>=0.115.0",
@@ -52,11 +61,12 @@ dev = [
     "pre-commit>=3.0.0",
 ]
 all = [
-    "vox[xtts,piper,image,lora,web,claude,dev]",
+    "vox[xtts,piper,image,lora,web,claude,memory,mcp,dev]",
 ]
 
 [project.scripts]
 vox = "vox.cli:main"
+vox-mcp = "vox.mcp_server:main"
 
 [tool.ruff]
 target-version = "py310"
