@@ -20,8 +20,10 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install ruff
-      - name: Lint
+      - name: Lint src
         run: ruff check src/
+      - name: Lint tests
+        run: ruff check tests/ --ignore E402,S101
 
   test:
     runs-on: ubuntu-latest
@@ -33,8 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install package with dev + memory dependencies
-        run: pip install -e ".[dev,memory]"
+      - name: Install package with dev + memory + web + mcp dependencies
+        run: pip install -e ".[dev,memory,web,mcp]"
       - name: Run tests
         run: pytest tests/ -v
 

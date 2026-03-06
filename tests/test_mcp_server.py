@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("mcp", reason="mcp not installed")
+
 # ---------------------------------------------------------------------------
 # Stub out heavy VOX modules before importing mcp_server
 # ---------------------------------------------------------------------------

@@ -3,7 +3,11 @@
 import re
 from unittest.mock import MagicMock
 
-from vox.web import _check_ws_origin, _find_generated_images
+import pytest
+
+pytest.importorskip("fastapi", reason="fastapi not installed")
+
+from vox.web import _check_ws_origin, _find_generated_images  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # _find_generated_images
