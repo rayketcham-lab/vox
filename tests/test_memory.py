@@ -1,11 +1,8 @@
 """Tests for persistent user memory and reminder systems."""
 
-import json
 import pytest
-from pathlib import Path
 
 from vox.memory import (
-    _MEMORY_FILE,
     build_memory_prompt_block,
     detect_memory_intent,
     forget,
@@ -13,13 +10,11 @@ from vox.memory import (
     remember,
 )
 from vox.reminders import (
-    _REMINDERS_FILE,
     add_reminder,
     cancel_reminder,
     detect_reminder_intent,
     list_reminders,
 )
-
 
 # ---------------------------------------------------------------------------
 # Memory intent detection

@@ -17,7 +17,7 @@ def test_check_ollama_returns_tuple():
 def test_cli_setup_flag():
     """Verify --setup is accepted by the CLI parser."""
     import argparse
-    from vox.cli import main
+
     # Just verify the parser accepts --setup without error
     parser = argparse.ArgumentParser()
     parser.add_argument("--setup", action="store_true")

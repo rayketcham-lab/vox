@@ -2,9 +2,8 @@
 
 import pytest
 
-from vox.escalate import _ESCALATION_TRIGGERS, _QUALITY_COMPLAINTS, should_escalate
 from vox.auto_issue import _FEATURE_REQUEST_SIGNALS, should_create_issue
-
+from vox.escalate import _ESCALATION_TRIGGERS, _QUALITY_COMPLAINTS, should_escalate
 
 # ---------------------------------------------------------------------------
 # Escalation trigger detection

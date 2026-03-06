@@ -84,7 +84,7 @@ def _get_mood_block(card: dict) -> str:
     if activities:
         # Use hour as seed so activity stays consistent within the same hour
         hour_seed = datetime.now().hour * 100 + datetime.now().day
-        rng = random.Random(hour_seed)
+        rng = random.Random(hour_seed)  # noqa: S311
         activity = rng.choice(activities)
         activity_line = f" Right now you're {activity}."
 
@@ -153,7 +153,7 @@ def build_system_prompt() -> str:
         if life_ctx:
             prompt += "\n" + life_ctx
     except Exception:
-        pass
+        log.debug("Persona life context skipped")
 
     return prompt
 
@@ -320,4 +320,5 @@ def _tool_rules_block() -> str:
 - If the user's request does not match any tool, do NOT call any tool. Just answer normally.
 - NEVER call a tool based on previous conversation context — only the current message.
 - When in doubt, do NOT use a tool.
-- NEVER make up file paths or filenames. If a tool returns a file path, use that exact path. If no path was returned, don't invent one."""
+- NEVER make up file paths or filenames. If a tool returns a file path, \
+use that exact path. If no path was returned, don't invent one."""

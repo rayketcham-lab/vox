@@ -1,6 +1,6 @@
 """Tests for multi-step task planner."""
 
-from vox.planner import is_multi_step, build_plan_prompt, format_plan_for_user
+from vox.planner import build_plan_prompt, format_plan_for_user, is_multi_step
 
 
 def test_multi_step_search_then_email():

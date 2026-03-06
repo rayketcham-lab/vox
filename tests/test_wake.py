@@ -1,6 +1,5 @@
 """Tests for wake word and activation modes."""
 
-import pytest
 
 
 def test_always_mode_returns_immediately(monkeypatch):

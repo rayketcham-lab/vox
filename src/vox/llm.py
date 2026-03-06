@@ -14,8 +14,6 @@ from pathlib import Path
 
 import ollama
 
-log = logging.getLogger(__name__)
-
 from vox.config import OLLAMA_CHAT_MODEL, OLLAMA_HOST, OLLAMA_MODEL, VISION_MODEL
 from vox.persona import build_system_prompt
 from vox.tools import (
@@ -25,6 +23,8 @@ from vox.tools import (
     execute_tool,
     validate_tool_call,
 )
+
+log = logging.getLogger(__name__)
 
 # Conversation history
 _history: list[dict] = []
@@ -106,7 +106,7 @@ def chat(
                 from vox.vector_memory import store_fact
                 store_fact(data, category="user_stated")
             except Exception:
-                pass
+                log.debug("Vector memory store failed for remember action")
         elif action == "forget":
             mem_result = forget(data)
         else:
@@ -159,7 +159,7 @@ def chat(
         if sentiment_delta != 0.0:
             nudge_mood(sentiment_delta)
     except Exception:
-        pass
+        log.debug("Sentiment nudge skipped")
 
     _history.append({"role": "user", "content": user_message})
     while len(_history) > MAX_HISTORY:
@@ -176,7 +176,7 @@ def chat(
                 step_names = [i.tool_name for i in intents]
                 log.info("Multi-step plan: %s", " → ".join(step_names))
         except Exception:
-            pass
+            log.debug("Multi-step plan detection skipped")
 
     if intents:
         log.info("Routing to concurrent tool path: %s", [i.tool_name for i in intents])
@@ -402,7 +402,10 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
             fn_args = tool_call["function"]["arguments"]
 
             if not validate_tool_call(fn_name, current_msg):
-                log.warning("BLOCKED spurious tool call: %s(%s) — not relevant to: %s", fn_name, fn_args, current_msg[:80])
+                log.warning(
+                    "BLOCKED spurious tool call: %s(%s) — not relevant to: %s",
+                    fn_name, fn_args, current_msg[:80],
+                )
                 continue
 
             log.info("LLM tool call: %s(%s)", fn_name, fn_args)

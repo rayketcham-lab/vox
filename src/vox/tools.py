@@ -360,9 +360,9 @@ def _build_persona_prompt(text: str) -> str:
 
     random_additions = []
     if not has_pose:
-        random_additions.append(random.choice(poses))
+        random_additions.append(random.choice(poses))  # noqa: S311
     if not has_setting:
-        random_additions.append(random.choice(settings))
+        random_additions.append(random.choice(settings))  # noqa: S311
 
     # Inject LoRA trigger word if a LoRA is available
     trigger = ""
@@ -441,10 +441,16 @@ def _extract_image_prompt(text: str) -> str:
     prompt = re.sub(r"\b(and\s+)?(email|send)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
     prompt = re.sub(r"\b(at|to)\s+\S+@\S+\.\S+.*$", "", prompt, flags=re.IGNORECASE).strip()
     # Strip purpose tails — "for a ... meme", "for my blog", etc.
-    prompt = re.sub(r"\s+for\s+(a|an|my|the|some)\b.*\b(meme|blog|post|project|website|collection)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
+    prompt = re.sub(
+        r"\s+for\s+(a|an|my|the|some)\b.*\b(meme|blog|post|project|website|collection)\b.*$",
+        "", prompt, flags=re.IGNORECASE,
+    ).strip()
     # Strip conversational tails — "but we should...", "and we need...", "we should...", etc.
     prompt = re.sub(r",?\s*\b(but|however)\s+(we|you|i|it)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
-    prompt = re.sub(r",?\s*\b(and|,)\s+(we|you|i)\s+(should|need|want|can|could|have)\b.*$", "", prompt, flags=re.IGNORECASE).strip()
+    prompt = re.sub(
+        r",?\s*\b(and|,)\s+(we|you|i)\s+(should|need|want|can|could|have)\b.*$",
+        "", prompt, flags=re.IGNORECASE,
+    ).strip()
     return prompt.strip().rstrip("?.!")
 
 
@@ -475,7 +481,8 @@ _add_pattern(
     "Let me check the forecast for you...",
 )
 _add_pattern(
-    r"what time|current time|what.s the time|what is the time|what is the date|\bthe date\b.*\btoday\b|\btoday.s date\b",
+    r"what time|current time|what.s the time|what is the time"
+    r"|what is the date|\bthe date\b.*\btoday\b|\btoday.s date\b",
     "get_current_time",
     lambda m, t: {},
     "The time right now is",
@@ -623,7 +630,8 @@ _add_pattern(
     "Let me check that folder...",
 )
 _add_pattern(
-    r"\b(find|search\s+for|look\s+for|where('?s| is))\s+(that\s+|the\s+|my\s+)?\S*\.(pdf|docx?|xlsx?|txt|csv|png|jpg|zip)\b",
+    r"\b(find|search\s+for|look\s+for|where('?s| is))\s+(that\s+|the\s+|my\s+)?"
+    r"\S*\.(pdf|docx?|xlsx?|txt|csv|png|jpg|zip)\b",
     "find_file",
     lambda m, t: {"pattern": re.search(r"\S+\.\S+", t).group(0)
                   if re.search(r"\S+\.\S+", t) else ""},
@@ -1300,7 +1308,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": "Fetch a URL and return its content. For HTML pages, returns extracted text. For PDFs, downloads and saves the file.",
+            "description": (
+                "Fetch a URL and return its content."
+                " For HTML pages, returns extracted text."
+                " For PDFs, downloads and saves the file."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1317,7 +1329,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_map",
-            "description": "Get a real satellite or map image of a location/address. Use for addresses, places, directions, 'satellite view of', 'map of'.",
+            "description": (
+                "Get a real satellite or map image of a location/address."
+                " Use for addresses, places, directions,"
+                " 'satellite view of', 'map of'."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1343,7 +1359,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "generate_image",
-            "description": "Generate an AI image from a text prompt using Stable Diffusion. Do NOT use for real locations or addresses — use get_map instead.",
+            "description": (
+                "Generate an AI image from a text prompt using Stable Diffusion."
+                " Do NOT use for real locations or addresses"
+                " — use get_map instead."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1560,7 +1580,11 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "Action: play, pause, next, previous, now_playing, volume_up, volume_down, mute, unmute",
+                        "description": (
+                            "Action: play, pause, next, previous,"
+                            " now_playing, volume_up, volume_down,"
+                            " mute, unmute"
+                        ),
                     },
                 },
                 "required": ["action"],
@@ -1589,7 +1613,10 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "directory": {"type": "string", "description": "Directory to index (uses RAG_DOCS_DIR if not specified)"},
+                    "directory": {
+                        "type": "string",
+                        "description": "Directory to index (uses RAG_DOCS_DIR if not specified)",
+                    },
                 },
                 "required": [],
             },
@@ -2054,7 +2081,7 @@ def _remove_contact(contact_id: int = 0, **kwargs) -> str:
 @_register("run_macro")
 def _run_macro(name: str = "", **kwargs) -> str:
     """Run a saved macro by name."""
-    from vox.macros import find_macro, execute_macro
+    from vox.macros import execute_macro, find_macro
     if not name:
         return "Which macro? Tell me the name."
     macro = find_macro(name)
@@ -2352,7 +2379,7 @@ def _daily_briefing(**kwargs) -> str:
         if weather and "error" not in weather.lower():
             sections.append(f"Weather: {weather}")
     except Exception:
-        pass
+        log.debug("Weather fetch failed in daily briefing")
 
     # Notes/to-do
     try:
@@ -2362,7 +2389,7 @@ def _daily_briefing(**kwargs) -> str:
             pending = notes.count("[TODO]")
             sections.append(f"You have {pending} pending task(s)." if pending else notes)
     except Exception:
-        pass
+        log.debug("Notes fetch failed in daily briefing")
 
     if len(sections) <= 1:
         sections.append("That's all I have for now.")
@@ -2401,7 +2428,7 @@ def _parse_rss(xml_text: str, max_items: int = 5) -> list[dict]:
 
     items = []
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml_text)  # noqa: S314
     except ET.ParseError:
         return []
 
@@ -2439,8 +2466,8 @@ def _parse_rss(xml_text: str, max_items: int = 5) -> list[dict]:
 @_register("get_news")
 def _get_news(topic: str = "general", **kwargs) -> str:
     """Fetch news headlines from RSS feeds."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     topic = topic.lower().strip()
     feeds = _RSS_FEEDS.get(topic, _RSS_FEEDS["general"])
@@ -2502,7 +2529,8 @@ def _send_media_key(vk_code: str) -> bool:
         f'Add-Type -TypeDefinition @"\n'
         f'using System; using System.Runtime.InteropServices;\n'
         f'public class VKey {{\n'
-        f'  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n'
+        f'  [DllImport("user32.dll")] public static extern void\n'
+        f'    keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n'
         f'}}\n'
         f'"@\n'
         f'[VKey]::keybd_event({vk_code}, 0, 0, [UIntPtr]::Zero)\n'
@@ -2791,11 +2819,10 @@ def _upscale_image(path: str = "", scale: int = 2, **kwargs) -> str:
 
     # Try Real-ESRGAN first (GPU, high quality)
     try:
-        from realesrgan import RealESRGANer
-        from basicsr.archs.rrdbnet_arch import RRDBNet
-        import torch
         import numpy as np
+        from basicsr.archs.rrdbnet_arch import RRDBNet
         from PIL import Image
+        from realesrgan import RealESRGANer
 
         model = RRDBNet(
             num_in_ch=3, num_out_ch=3, num_feat=64,
@@ -3079,6 +3106,7 @@ def _search_brave(query: str) -> tuple[list[str], list[str]]:
     import json
     import urllib.parse
     import urllib.request
+
     from vox.config import BRAVE_API_KEY
 
     if not BRAVE_API_KEY:
@@ -3110,6 +3138,7 @@ def _search_searxng(query: str) -> tuple[list[str], list[str]]:
     import json
     import urllib.parse
     import urllib.request
+
     from vox.config import SEARXNG_URL
 
     if not SEARXNG_URL:
@@ -3444,7 +3473,7 @@ def _web_fetch(url: str = "", **kwargs) -> str:
     from urllib.parse import urlparse
     _parsed = urlparse(url)
     _host = _parsed.hostname or ""
-    _BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "metadata.google.internal"}
+    _BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "metadata.google.internal"}  # noqa: S104
     if _host in _BLOCKED_HOSTS or _host.startswith(("10.", "192.168.", "169.254.")):
         return f"Blocked: cannot fetch internal/private URLs ({_host})"
     if _host.startswith("172.") and 16 <= int(_host.split(".")[1]) <= 31:
@@ -3536,7 +3565,7 @@ def _get_single_file_url(model_id: str) -> str | None:
 
 # Model manager handles load-on-demand / unload-after-use for VRAM efficiency.
 # Old permanent cache replaced — SDXL now unloads after generation, freeing ~12GB.
-from vox import model_manager as _mm
+from vox import model_manager as _mm  # noqa: E402
 
 
 def _load_pipeline(pipeline_cls, model_id: str, dtype):
@@ -3725,7 +3754,10 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False,
         prompt_2 = None
         if is_sdxl and len(full_prompt.split()) > 40:
             # Find a natural split point — style tags usually start after the scene
-            style_markers = ["photorealistic", "canon", "shot on", "natural lighting", "shallow depth", "film grain", "raw photo", "8k"]
+            style_markers = [
+                "photorealistic", "canon", "shot on", "natural lighting",
+                "shallow depth", "film grain", "raw photo", "8k",
+            ]
             split_idx = len(full_prompt)
             for marker in style_markers:
                 idx = full_prompt.lower().find(marker)
@@ -3761,7 +3793,7 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False,
                 try:
                     _image_progress_fn(steps_done + step + 1, total_steps)
                 except Exception:
-                    pass
+                    log.debug("Image progress callback failed")
                 return callback_kwargs
             gen_kwargs["callback_on_step_end"] = _step_callback
 
@@ -3810,7 +3842,7 @@ def _generate_image(prompt: str = "", style: str = "", _selfie: bool = False,
                 try:
                     _image_saved_fn(filename)
                 except Exception:
-                    pass
+                    log.debug("Image saved callback failed")
 
         # Release pipeline — frees ~12GB VRAM back to chat mode.
         # keep_alive=120s means rapid re-requests reuse the cached pipeline.

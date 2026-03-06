@@ -33,7 +33,10 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="chat",
-            description="Send a message to VOX and get a response. VOX is a local AI assistant with persona, memory, and tool-calling capabilities.",
+            description=(
+                "Send a message to VOX and get a response. "
+                "VOX is a local AI assistant with persona, memory, and tool-calling capabilities."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -49,7 +52,11 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "fact": {"type": "string", "description": "The fact to remember"},
-                    "category": {"type": "string", "description": "Category (general, preference, date, person)", "default": "general"},
+                    "category": {
+                        "type": "string",
+                        "description": "Category (general, preference, date, person)",
+                        "default": "general",
+                    },
                 },
                 "required": ["fact"],
             },
@@ -141,7 +148,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 from vox.vector_memory import store_fact
                 store_fact(arguments["fact"], arguments.get("category", "general"))
             except Exception:
-                pass
+                log.debug("Vector memory store failed in MCP remember")
             return [TextContent(type="text", text=result)]
 
         elif name == "recall":
@@ -159,7 +166,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 meta = h["metadata"]
                 dist = h["distance"]
                 if meta.get("type") == "conversation":
-                    lines.append(f"[{dist:.2f}] User: {meta.get('user_message', '')[:100]} → {meta.get('assistant_response', '')[:100]}")
+                    user_msg = meta.get('user_message', '')[:100]
+                    asst_msg = meta.get('assistant_response', '')[:100]
+                    lines.append(f"[{dist:.2f}] User: {user_msg} → {asst_msg}")
                 else:
                     lines.append(f"[{dist:.2f}] Fact: {h['document'][:200]}")
             return [TextContent(type="text", text="\n".join(lines))]

@@ -1,6 +1,5 @@
 """Tests for conversation logging."""
 
-import json
 
 import pytest
 

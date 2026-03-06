@@ -156,7 +156,7 @@ def get_activity() -> str:
     if _current_activity is None or hour != _activity_set_hour:
         for (start, end), activities in _ACTIVITIES.items():
             if start <= hour < end:
-                _current_activity = random.choice(activities)
+                _current_activity = random.choice(activities)  # noqa: S311
                 _activity_set_hour = hour
                 break
         else:

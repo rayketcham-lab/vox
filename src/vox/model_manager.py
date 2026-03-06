@@ -119,7 +119,7 @@ def _unload(name: str, entry: dict):
         try:
             instance.to("cpu")
         except Exception:
-            pass
+            log.debug("Failed to move model to CPU before unload")
     del instance
     gc.collect()
 

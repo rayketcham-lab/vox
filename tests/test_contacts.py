@@ -1,6 +1,5 @@
 """Tests for contacts / address book."""
 
-import json
 
 import pytest
 

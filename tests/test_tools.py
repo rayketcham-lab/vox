@@ -14,7 +14,6 @@ from vox.tools import (
     validate_tool_call,
 )
 
-
 # ---------------------------------------------------------------------------
 # Tool execution
 # ---------------------------------------------------------------------------
@@ -509,7 +508,7 @@ def test_web_fetch_no_false_positive():
     # 'download' alone without pdf/page/url/link/site/website should not match web_fetch
     # and there's no URL in the text, so neither pattern should fire
     assert intent is None or intent.tool_name != "web_fetch", (
-        f"Unexpected web_fetch intent for generic download request"
+        "Unexpected web_fetch intent for generic download request"
     )
 
 
@@ -1008,7 +1007,7 @@ def test_clipboard_execution():
 # ---------------------------------------------------------------------------
 
 def test_cache_hit():
-    from vox.tools import _tool_cache, cache_bust, _cache_key, _cache_set
+    from vox.tools import _cache_set, cache_bust
     cache_bust()  # clear
     # Manually populate cache
     _cache_set("get_weather", {"location": "NYC"}, "Sunny and 72F")
@@ -1019,7 +1018,7 @@ def test_cache_hit():
 
 
 def test_cache_bust():
-    from vox.tools import _tool_cache, cache_bust, _cache_set
+    from vox.tools import _cache_set, cache_bust
     cache_bust()
     _cache_set("get_weather", {"location": "NYC"}, "Sunny")
     cache_bust("get_weather")
@@ -1029,7 +1028,7 @@ def test_cache_bust():
 
 
 def test_cache_bust_all():
-    from vox.tools import cache_bust, _cache_set, _cache_get
+    from vox.tools import _cache_get, _cache_set, cache_bust
     cache_bust()
     _cache_set("get_weather", {"location": "NYC"}, "Sunny")
     _cache_set("get_system_info", {}, "RTX 3090")
@@ -1040,7 +1039,7 @@ def test_cache_bust_all():
 
 def test_refresh_busts_cache():
     """'refresh' keyword should clear cache before detecting intent."""
-    from vox.tools import cache_bust, _cache_set, _cache_get, _tool_cache
+    from vox.tools import _cache_get, _cache_set, cache_bust
     cache_bust()
     _cache_set("get_weather", {"location": "NYC"}, "Old weather")
     # Detecting intent with "refresh" should clear cache
@@ -1569,7 +1568,7 @@ def test_search_ddg_returns_tuple():
         results, urls = _search_ddg("test query")
         assert isinstance(results, list)
         assert isinstance(urls, list)
-    except Exception:
+    except Exception:  # noqa: S110
         pass  # Network may not be available in CI
 
 

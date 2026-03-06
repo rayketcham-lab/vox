@@ -72,7 +72,7 @@ class _BasicAuthMiddleware(BaseHTTPMiddleware):
                         and hmac.compare_digest(passwd, WEB_AUTH_PASS)):
                     return await call_next(request)
             except Exception:
-                pass
+                log.debug("Basic auth decode failed for request to %s", request.url.path)
 
         return Response(
             "Unauthorized",
@@ -236,7 +236,7 @@ def _check_ws_auth(ws: WebSocket) -> bool:
             return (hmac.compare_digest(user, WEB_AUTH_USER)
                     and hmac.compare_digest(passwd, WEB_AUTH_PASS))
         except Exception:
-            pass
+            log.debug("WebSocket auth decode failed")
     return False
 
 
@@ -252,7 +252,7 @@ def _check_ws_origin(ws: WebSocket) -> bool:
     origin_host = parsed.hostname or ""
     expected_host = host.split(":")[0] if host else ""
     # Allow localhost variants and same-host
-    localhost_aliases = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    localhost_aliases = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}  # noqa: S104
     if origin_host in localhost_aliases and expected_host in localhost_aliases:
         return True
     return origin_host == expected_host
@@ -377,7 +377,7 @@ async def _send_progress(ws: WebSocket, step: int, total: int):
             pct = int(step / total * 100) if total else 0
             await ws.send_json({"type": "progress", "step": step, "total": total, "pct": pct})
         except Exception:
-            pass
+            log.debug("Failed to send image progress update (step %d/%d)", step, total)
 
 
 async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_images: list[str] | None = None):
@@ -420,7 +420,7 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
                 _send_progress(ws, step, total),
             )
         except Exception:
-            pass
+            log.debug("Failed to schedule image progress callback")
 
     # Image saved callback — push image inline immediately when saved
     def on_image_saved(filename: str):
@@ -433,11 +433,11 @@ async def _handle_chat(ws: WebSocket, session_id: str, user_text: str, user_imag
                         "filename": filename,
                     })
                 except Exception:
-                    pass
+                    log.debug("Failed to send inline image %s over WebSocket", filename)
         try:
             loop.call_soon_threadsafe(asyncio.ensure_future, _send())
         except Exception:
-            pass
+            log.debug("Failed to schedule image-saved callback for %s", filename)
 
     def run_chat() -> str:
         from vox import tools as _tools_mod
@@ -620,10 +620,11 @@ async def _model_cleanup_loop():
 
 def start_server(host: str | None = None, port: int | None = None):
     """Start the uvicorn server."""
+    import logging as _logging
+
     import uvicorn
 
     # Configure logging to file + console so user can tail the log
-    import logging as _logging
     _logging.basicConfig(
         level=_logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

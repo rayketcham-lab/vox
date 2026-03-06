@@ -1,7 +1,6 @@
 """Tests for TTS module."""
 
 import numpy as np
-import pytest
 
 
 def test_speak_empty_text():
@@ -41,10 +40,6 @@ def test_get_sample_rate_xtts(monkeypatch):
 def test_piper_not_installed(monkeypatch):
     """Piper should gracefully handle missing binary."""
     monkeypatch.setattr("vox.tts.TTS_ENGINE", "piper")
-    # Mock subprocess to raise FileNotFoundError
-    import subprocess
-    original_run = subprocess.run
-
     def mock_run(*args, **kwargs):
         raise FileNotFoundError("piper not found")
 
@@ -58,7 +53,6 @@ def test_piper_not_installed(monkeypatch):
 def test_xtts_not_installed(monkeypatch):
     """XTTS should gracefully handle missing TTS library."""
     monkeypatch.setattr("vox.tts._xtts_model", None)
-    import sys
     # Temporarily make TTS import fail
     real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 

@@ -73,7 +73,10 @@ class LoRADataset(Dataset):
             xforms.append(transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR))
             xforms.append(transforms.CenterCrop(resolution))
         else:
-            xforms.append(transforms.Resize((resolution, resolution), interpolation=transforms.InterpolationMode.BILINEAR))
+            xforms.append(transforms.Resize(
+                (resolution, resolution),
+                interpolation=transforms.InterpolationMode.BILINEAR,
+            ))
         if random_flip:
             xforms.append(transforms.RandomHorizontalFlip())
         xforms.append(transforms.ToTensor())
@@ -496,7 +499,6 @@ def train_lora(
                 continue
 
             # Track which image we're on for crash diagnostics
-            current_img_idx = step  # DataLoader batch index
             current_caption = batch["caption"][0][:80] if batch["caption"] else "?"
 
             try:
@@ -510,19 +512,36 @@ def train_lora(
 
                 # Noise in float32
                 noise = torch.randn_like(latents)
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=device).long()
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps,
+                    (latents.shape[0],), device=device,
+                ).long()
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # Encode text
-                tokens_1 = tokenizer_1(captions, padding="max_length", max_length=tokenizer_1.model_max_length, truncation=True, return_tensors="pt").to(device)
-                tokens_2 = tokenizer_2(captions, padding="max_length", max_length=tokenizer_2.model_max_length, truncation=True, return_tensors="pt").to(device)
+                tokens_1 = tokenizer_1(
+                    captions, padding="max_length",
+                    max_length=tokenizer_1.model_max_length,
+                    truncation=True, return_tensors="pt",
+                ).to(device)
+                tokens_2 = tokenizer_2(
+                    captions, padding="max_length",
+                    max_length=tokenizer_2.model_max_length,
+                    truncation=True, return_tensors="pt",
+                ).to(device)
 
                 # Text encoder forward
                 if train_text_encoder:
-                    encoder_hidden_states_1 = text_encoder_1(tokens_1.input_ids, output_hidden_states=True).hidden_states[-2]
+                    enc_out_1 = text_encoder_1(
+                        tokens_1.input_ids, output_hidden_states=True,
+                    )
+                    encoder_hidden_states_1 = enc_out_1.hidden_states[-2]
                 else:
                     with torch.no_grad():
-                        encoder_hidden_states_1 = text_encoder_1(tokens_1.input_ids, output_hidden_states=True).hidden_states[-2]
+                        enc_out_1 = text_encoder_1(
+                            tokens_1.input_ids, output_hidden_states=True,
+                        )
+                        encoder_hidden_states_1 = enc_out_1.hidden_states[-2]
 
                 with torch.no_grad():
                     te2_output = text_encoder_2(tokens_2.input_ids, output_hidden_states=True)
@@ -533,7 +552,10 @@ def train_lora(
                 encoder_hidden_states = torch.cat([encoder_hidden_states_1, encoder_hidden_states_2], dim=-1)
 
                 # SDXL additional conditioning
-                add_time_ids = _compute_time_ids(resolution, resolution, 0, 0, resolution, resolution, device, torch.float32)
+                add_time_ids = _compute_time_ids(
+                    resolution, resolution, 0, 0,
+                    resolution, resolution, device, torch.float32,
+                )
                 add_time_ids = add_time_ids.repeat(latents.shape[0], 1)
 
                 added_cond_kwargs = {
@@ -573,8 +595,16 @@ def train_lora(
                     prior_noisy = noise_scheduler.add_noise(prior_latents, prior_noise, prior_timesteps)
 
                     # Encode prior captions
-                    pt1 = tokenizer_1(prior_captions, padding="max_length", max_length=tokenizer_1.model_max_length, truncation=True, return_tensors="pt").to(device)
-                    pt2 = tokenizer_2(prior_captions, padding="max_length", max_length=tokenizer_2.model_max_length, truncation=True, return_tensors="pt").to(device)
+                    pt1 = tokenizer_1(
+                        prior_captions, padding="max_length",
+                        max_length=tokenizer_1.model_max_length,
+                        truncation=True, return_tensors="pt",
+                    ).to(device)
+                    pt2 = tokenizer_2(
+                        prior_captions, padding="max_length",
+                        max_length=tokenizer_2.model_max_length,
+                        truncation=True, return_tensors="pt",
+                    ).to(device)
 
                     with torch.no_grad():
                         phs1 = text_encoder_1(pt1.input_ids, output_hidden_states=True).hidden_states[-2]
@@ -583,12 +613,18 @@ def train_lora(
                         p_pooled = pte2[0]
 
                     prior_hidden = torch.cat([phs1, phs2], dim=-1)
-                    prior_add_time_ids = _compute_time_ids(resolution, resolution, 0, 0, resolution, resolution, device, torch.float32)
+                    prior_add_time_ids = _compute_time_ids(
+                        resolution, resolution, 0, 0,
+                        resolution, resolution, device, torch.float32,
+                    )
                     prior_add_time_ids = prior_add_time_ids.repeat(prior_latents.shape[0], 1)
                     prior_cond = {"text_embeds": p_pooled.float(), "time_ids": prior_add_time_ids}
 
                     with torch.amp.autocast("cuda", dtype=torch.float16):
-                        prior_pred = unet(prior_noisy, prior_timesteps, prior_hidden, added_cond_kwargs=prior_cond).sample
+                        prior_pred = unet(
+                            prior_noisy, prior_timesteps, prior_hidden,
+                            added_cond_kwargs=prior_cond,
+                        ).sample
 
                     prior_loss = F.mse_loss(prior_pred.float(), prior_noise, reduction="mean")
                     loss = subject_loss + prior_loss_weight * prior_loss
@@ -672,7 +708,6 @@ def train_lora(
         log.info("Epoch %d complete — avg loss: %.4f", epoch + 1, avg_epoch_loss)
 
     # --- Save final LoRA ---
-    final_path = output_dir / f"{slug}_lora.safetensors"
     _save_final_lora(output_dir, unet, text_encoder_1 if train_text_encoder else None, slug)
 
     elapsed = time.time() - start_time
@@ -806,7 +841,10 @@ def main():
     parser.add_argument("--prior-weight", type=float, default=1.0, help="Prior preservation loss weight (default: 1.0)")
     parser.add_argument("--prior-class-prompt", default="woman, portrait, photorealistic, natural lighting",
                         help="Class prompt for regularization images")
-    parser.add_argument("--prior-num-images", type=int, default=200, help="Number of regularization images (default: 200)")
+    parser.add_argument(
+        "--prior-num-images", type=int, default=200,
+        help="Number of regularization images (default: 200)",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -855,7 +893,7 @@ def main():
         print(f"  Trigger: {result['trigger_word']}")
         print(f"  Epochs: {result['epochs']}")
         print(f"  Best loss: {result['best_loss']:.4f}")
-        print(f"  Epoch losses: {[f'{l:.4f}' for l in result['epoch_losses']]}")
+        print(f"  Epoch losses: {[f'{loss_val:.4f}' for loss_val in result['epoch_losses']]}")
         print(f"  Time: {result['training_time']}")
         print(f"\nTo use: add 'ohwx {args.persona}' to your image prompts")
 

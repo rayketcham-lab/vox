@@ -1,6 +1,5 @@
 """Tests for RAG module — document chunking and search."""
 
-import pytest
 
 from vox.rag import _chunk_text, _extract_text, _file_hash
 

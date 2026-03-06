@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import patch
 from datetime import datetime
+from unittest.mock import patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Mood system
@@ -23,22 +23,22 @@ class TestMoodSystem:
         assert get_mood_label() == "chill"
 
     def test_nudge_mood_positive(self):
-        from vox.persona_life import nudge_mood, get_mood
+        from vox.persona_life import get_mood, nudge_mood
         nudge_mood(0.5)
         assert get_mood() == pytest.approx(0.8)
 
     def test_nudge_mood_negative(self):
-        from vox.persona_life import nudge_mood, get_mood
+        from vox.persona_life import get_mood, nudge_mood
         nudge_mood(-0.5)
         assert get_mood() == pytest.approx(-0.2)
 
     def test_mood_clamps_high(self):
-        from vox.persona_life import nudge_mood, get_mood
+        from vox.persona_life import get_mood, nudge_mood
         nudge_mood(5.0)
         assert get_mood() == 1.0
 
     def test_mood_clamps_low(self):
-        from vox.persona_life import nudge_mood, get_mood
+        from vox.persona_life import get_mood, nudge_mood
         nudge_mood(-5.0)
         assert get_mood() == -1.0
 

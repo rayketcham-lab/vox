@@ -1,14 +1,12 @@
 """Tests for proactive persona behavior system."""
 
-from unittest.mock import patch
 from datetime import datetime
-
-import pytest
+from unittest.mock import patch
 
 from vox.proactive import (
-    _morning_briefing_prompt,
     _checkin_prompt,
     _goodnight_prompt,
+    _morning_briefing_prompt,
     get_proactive_message,
     reset_daily,
 )

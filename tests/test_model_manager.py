@@ -1,7 +1,7 @@
 """Tests for the modular model manager."""
 
-import time
 import threading
+import time
 from unittest.mock import MagicMock
 
 from vox import model_manager as mm
