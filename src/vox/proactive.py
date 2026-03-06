@@ -44,15 +44,14 @@ def get_proactive_message() -> str | None:
     day = now.day
 
     # Reset tracking on new day
-    if "day" not in _sent_today or int(list(_sent_today - {"day"})[0].split("_")[-1]) != day if any("day_" in s for s in _sent_today) else True:
-        if f"day_{day}" not in _sent_today:
-            reset_daily()
-            _sent_today.add(f"day_{day}")
+    if f"day_{day}" not in _sent_today:
+        reset_daily()
+        _sent_today.add(f"day_{day}")
 
     # Morning briefing (7-9 AM, once per day)
     if 7 <= hour <= 9 and "morning" not in _sent_today:
         # 30% chance each check (so it feels natural, not exactly at 7:00)
-        if random.random() < 0.3:
+        if random.random() < 0.3:  # noqa: S311
             _sent_today.add("morning")
             return _morning_briefing_prompt()
 
@@ -60,14 +59,14 @@ def get_proactive_message() -> str | None:
     if 10 <= hour <= 21 and (hour - _last_checkin_hour) >= 2:
         # 5% chance each minute = roughly once per 20 minutes on average
         # but capped at once per 2 hours
-        if random.random() < 0.05:
+        if random.random() < 0.05:  # noqa: S311
             _last_checkin_hour = hour
             _sent_today.add(f"checkin_{hour}")
             return _checkin_prompt()
 
     # Goodnight (10-11 PM, once per day)
     if 22 <= hour <= 23 and "goodnight" not in _sent_today:
-        if random.random() < 0.2:
+        if random.random() < 0.2:  # noqa: S311
             _sent_today.add("goodnight")
             return _goodnight_prompt()
 
@@ -101,17 +100,17 @@ def _checkin_prompt() -> str:
         f"or react to something from your activities/opinions. 1 sentence max. "
         f"Be natural, not formulaic.",
 
-        f"[PROACTIVE — you're initiating conversation, not responding to the user]\n"
-        f"Share a random thought or observation. Maybe something about "
-        f"what you're watching, eating, thinking about. Keep it casual and short — "
-        f"like a text from a friend. 1 sentence.",
+        "[PROACTIVE — you're initiating conversation, not responding to the user]\n"
+        "Share a random thought or observation. Maybe something about "
+        "what you're watching, eating, thinking about. Keep it casual and short — "
+        "like a text from a friend. 1 sentence.",
 
-        f"[PROACTIVE — you're initiating conversation, not responding to the user]\n"
-        f"Send a short message — could be a question, a comment about your day, "
-        f"a recommendation, or just vibes. Whatever feels natural right now. "
-        f"1 sentence, casual tone.",
+        "[PROACTIVE — you're initiating conversation, not responding to the user]\n"
+        "Send a short message — could be a question, a comment about your day, "
+        "a recommendation, or just vibes. Whatever feels natural right now. "
+        "1 sentence, casual tone.",
     ]
-    return random.choice(prompts)
+    return random.choice(prompts)  # noqa: S311
 
 
 def _goodnight_prompt() -> str:

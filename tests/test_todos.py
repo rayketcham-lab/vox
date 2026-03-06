@@ -3,7 +3,6 @@
 import pytest
 
 from vox.todos import (
-    _TODOS_FILE,
     add_todo,
     complete_todo,
     detect_todo_intent,

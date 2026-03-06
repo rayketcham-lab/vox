@@ -14,8 +14,6 @@ from pathlib import Path
 
 import ollama
 
-log = logging.getLogger(__name__)
-
 from vox.config import OLLAMA_CHAT_MODEL, OLLAMA_HOST, OLLAMA_MODEL, VISION_MODEL
 from vox.persona import build_system_prompt
 from vox.tools import (
@@ -25,6 +23,8 @@ from vox.tools import (
     execute_tool,
     validate_tool_call,
 )
+
+log = logging.getLogger(__name__)
 
 # Conversation history
 _history: list[dict] = []
@@ -101,6 +101,12 @@ def chat(
         data = mem_intent["data"]
         if action == "remember":
             mem_result = remember(data)
+            # Also store in vector memory for semantic search
+            try:
+                from vox.vector_memory import store_fact
+                store_fact(data, category="user_stated")
+            except Exception:
+                log.debug("Vector memory store failed for remember action")
         elif action == "forget":
             mem_result = forget(data)
         else:
@@ -137,12 +143,40 @@ def chat(
         _history.append({"role": "assistant", "content": response})
         return response
 
+    # Retrieve relevant past context from vector memory (semantic search)
+    try:
+        from vox.vector_memory import build_context_block
+        vector_context = build_context_block(user_message)
+        if vector_context:
+            _history.append({"role": "system", "content": vector_context})
+    except Exception as e:
+        log.debug("Vector memory retrieval skipped: %s", e)
+
+    # Nudge persona mood based on user sentiment
+    try:
+        from vox.persona_life import detect_sentiment_nudge, nudge_mood
+        sentiment_delta = detect_sentiment_nudge(user_message)
+        if sentiment_delta != 0.0:
+            nudge_mood(sentiment_delta)
+    except Exception:
+        log.debug("Sentiment nudge skipped")
+
     _history.append({"role": "user", "content": user_message})
     while len(_history) > MAX_HISTORY:
         _history.pop(0)
 
     # Fast intent detection (~1ms, regex-based)
     intents = detect_all_intents(user_message)
+
+    # Multi-step planning: log the plan for complex chained requests
+    if len(intents) >= 2:
+        try:
+            from vox.planner import is_multi_step
+            if is_multi_step(user_message):
+                step_names = [i.tool_name for i in intents]
+                log.info("Multi-step plan: %s", " → ".join(step_names))
+        except Exception:
+            log.debug("Multi-step plan detection skipped")
 
     if intents:
         log.info("Routing to concurrent tool path: %s", [i.tool_name for i in intents])
@@ -166,6 +200,25 @@ def chat(
             log.info("Auto-created issue: %s", issue_url)
 
     _history.append({"role": "assistant", "content": response})
+
+    # Condense stale tool results to prevent context bleed
+    _condense_old_tool_results()
+
+    # Log conversation exchange to daily JSONL file
+    try:
+        from vox.conversation_log import log_exchange
+        tools_used = [i.tool_name for i in intents] if intents else None
+        log_exchange(user_message, response, tools_used)
+    except Exception as e:
+        log.debug("Conversation logging skipped: %s", e)
+
+    # Store exchange in vector memory for future semantic retrieval
+    try:
+        from vox.vector_memory import store
+        store(user_message, response)
+    except Exception as e:
+        log.debug("Vector memory store skipped: %s", e)
+
     return response
 
 
@@ -244,6 +297,7 @@ def _chat_with_concurrent_tool(
                 args["body"] = tool_result
             # Attach files from primary tool result (images, maps, PDFs)
             import re as _re
+
             from vox.config import DOWNLOADS_DIR
             attached = []
             # Find all saved files in the tool result
@@ -348,7 +402,10 @@ def _chat_standard(model: str, on_chunk: callable | None) -> str:
             fn_args = tool_call["function"]["arguments"]
 
             if not validate_tool_call(fn_name, current_msg):
-                log.warning("BLOCKED spurious tool call: %s(%s) — not relevant to: %s", fn_name, fn_args, current_msg[:80])
+                log.warning(
+                    "BLOCKED spurious tool call: %s(%s) — not relevant to: %s",
+                    fn_name, fn_args, current_msg[:80],
+                )
                 continue
 
             log.info("LLM tool call: %s(%s)", fn_name, fn_args)
@@ -448,6 +505,24 @@ def chat_with_vision(
     _history.append({"role": "assistant", "content": full_response})
     log.info("Vision response (%d chars): %s", len(full_response), full_response[:200])
     return full_response
+
+
+def _condense_old_tool_results() -> None:
+    """Condense tool results older than the last 4 messages to brief summaries.
+
+    This prevents the LLM from hallucinating tool calls based on stale
+    tool results in conversation history (issue #13).
+    """
+    if len(_history) < 6:
+        return
+    # Only condense entries before the last 4 messages
+    cutoff = len(_history) - 4
+    for i in range(cutoff):
+        msg = _history[i]
+        if msg["role"] == "tool" and len(msg["content"]) > 100:
+            # Keep just a brief note that a tool was used
+            first_line = msg["content"].split("\n")[0][:80]
+            _history[i] = {"role": "tool", "content": f"[previous result: {first_line}...]"}
 
 
 def clear_history() -> None:

@@ -23,6 +23,9 @@ credentials/
 api_key*
 auth_token*
 
+# --- Accidental pip output (e.g., pip install foo>=0.26.0 creates =0.26.0) ---
+=*
+
 # --- Python ---
 __pycache__/
 *.py[cod]

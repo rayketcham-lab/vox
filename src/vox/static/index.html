@@ -237,6 +237,25 @@ html, body {
   cursor: pointer;
 }
 
+/* -- Image generation progress bar -- */
+.progress-container {
+  width: 100%;
+  margin: 8px 0;
+}
+.progress-bar {
+  height: 6px;
+  background: #6c63ff;
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+.progress-text {
+  display: block;
+  font-size: 0.75em;
+  color: #888;
+  margin-top: 4px;
+}
+
 /* -- Typing indicator -- */
 .typing-indicator {
   display: none;
@@ -812,6 +831,9 @@ html, body {
         if (!currentVoxBubble) {
           currentVoxBubble = addBubble("vox", "");
         }
+        // Remove progress bar now that image is ready
+        var prog = currentVoxBubble.querySelector(".progress-container");
+        if (prog) prog.remove();
         // Add cache-busted image to the bubble
         var img = document.createElement("img");
         img.className = "chat-image";
@@ -832,6 +854,31 @@ html, body {
       case "uploaded_images":
         // Server confirms uploaded images with their URLs — nothing to do,
         // user bubble already shows them from the local data URLs
+        break;
+
+      case "progress":
+        // Image generation step progress
+        hideTyping();
+        if (!currentVoxBubble) {
+          currentVoxBubble = addBubble("vox", "");
+        }
+        var bar = currentVoxBubble.querySelector(".progress-bar");
+        if (!bar) {
+          var pCont = document.createElement("div");
+          pCont.className = "progress-container";
+          var pBar = document.createElement("div");
+          pBar.className = "progress-bar";
+          var pText = document.createElement("span");
+          pText.className = "progress-text";
+          pCont.appendChild(pBar);
+          pCont.appendChild(pText);
+          currentVoxBubble.appendChild(pCont);
+          bar = pBar;
+        }
+        bar.style.width = msg.pct + "%";
+        bar.parentElement.querySelector(".progress-text").textContent =
+          msg.pct < 100 ? "Generating... " + msg.pct + "%" : "Almost done...";
+        scrollToBottom();
         break;
 
       case "done":
@@ -1064,11 +1111,17 @@ html, body {
           wrapper.className = "gallery-item";
 
           var el = document.createElement("img");
-          el.src = item.url || item;
+          var fullUrl = item.url || item;
+          var thumbUrl = "/api/images/" + encodeURIComponent(item.filename) + "/thumb";
+          el.src = thumbUrl;
           el.alt = item.filename || "Image";
           el.loading = "lazy";
+          el.onerror = function() {
+            // Thumbnail failed — fall back to full image
+            if (el.src !== fullUrl) el.src = fullUrl;
+          };
           el.addEventListener("click", function() {
-            openLightbox(el.src);
+            openLightbox(fullUrl);
           });
 
           var delBtn = document.createElement("button");

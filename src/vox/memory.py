@@ -59,7 +59,7 @@ def remember(fact: str, category: str = "general") -> str:
 
     _save(facts)
     log.info("Remembered: [%s] %s", category, fact)
-    return f"Got it, I'll remember that."
+    return "Got it, I'll remember that."
 
 
 def forget(keyword: str) -> str:
