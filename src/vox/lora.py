@@ -180,11 +180,19 @@ def generate_training_config(
     return config
 
 
-def auto_caption_images(persona_name: str, trigger_word: str | None = None) -> dict:
+def auto_caption_images(persona_name: str, trigger_word: str | None = None,
+                        use_vision: bool = True, overwrite: bool = False) -> dict:
     """Generate caption .txt files for each training image.
 
-    Uses a simple template: "<trigger_word>, <description>"
-    For best results, review and edit the captions manually.
+    When use_vision=True, uses Ollama's vision model (llava) to describe each
+    image in detail, prepending the trigger word. This produces captions like:
+        "ohwx ann, a woman with shoulder-length brown hair, blue eyes, slight
+         smile, wearing a red tank top, standing in a kitchen with warm lighting"
+
+    Detailed per-image captions are critical for LoRA quality — they teach the
+    model to separate identity (trigger word) from pose, clothing, and setting.
+
+    Falls back to generic captions if the vision model is unavailable.
 
     Returns dict with count of captions created.
     """
@@ -193,29 +201,102 @@ def auto_caption_images(persona_name: str, trigger_word: str | None = None) -> d
     trigger = trigger_word or f"ohwx {slug}"
     image_dir = paths["training_images"]
 
+    # Try to use vision model for detailed captions
+    vision_available = False
+    if use_vision:
+        try:
+            import httpx
+            resp = httpx.get("http://127.0.0.1:11434/api/tags", timeout=3)
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                vision_available = any("llava" in m or "llama" in m for m in models)
+        except Exception as exc:
+            log.debug("Ollama vision check failed: %s", exc)
+        if vision_available:
+            log.info("Vision model available — generating detailed captions")
+        else:
+            log.info("Vision model not available — using generic captions")
+
     created = 0
     skipped = 0
+    vision_used = 0
     extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-    for img_file in image_dir.iterdir():
+    for img_file in sorted(image_dir.iterdir()):
         if img_file.suffix.lower() not in extensions:
             continue
         caption_file = img_file.with_suffix(".txt")
-        if caption_file.exists():
+        if caption_file.exists() and not overwrite:
             skipped += 1
             continue
-        # Default caption — user should review and customize these
-        caption_file.write_text(f"{trigger}, a photo of a person", encoding="utf-8")
-        created += 1
 
-    log.info("Captions: created=%d, skipped=%d (already existed)", created, skipped)
+        caption = _vision_caption(img_file, trigger) if vision_available else None
+        if caption:
+            vision_used += 1
+        else:
+            caption = f"{trigger}, a photo of a person"
+
+        caption_file.write_text(caption, encoding="utf-8")
+        created += 1
+        if created % 10 == 0:
+            log.info("Captioned %d images so far...", created)
+
+    log.info("Captions: created=%d, skipped=%d, vision=%d", created, skipped, vision_used)
     return {
         "created": created,
         "skipped": skipped,
+        "vision_used": vision_used,
         "trigger_word": trigger,
         "note": "Review and edit caption .txt files for better results. "
-                "Each image should have a matching .txt describing the scene.",
+                "Each image should have a matching .txt describing the scene."
+                + (" Vision model generated detailed captions." if vision_used else ""),
     }
+
+
+def _vision_caption(img_path: Path, trigger: str) -> str | None:
+    """Use Ollama vision model to generate a detailed caption for a training image."""
+    import base64
+    try:
+        import httpx
+    except ImportError:
+        return None
+
+    try:
+        img_bytes = img_path.read_bytes()
+        img_b64 = base64.b64encode(img_bytes).decode()
+
+        prompt = (
+            "Describe this photo for Stable Diffusion training in one detailed sentence. "
+            "Include: hair color/style/length, eye color, skin tone, facial features "
+            "(freckles, moles, dimples, wrinkles), expression, body type, clothing, pose, "
+            "background/setting, lighting. Be specific and factual. "
+            "Do NOT mention names. Start with: a woman"
+        )
+
+        resp = httpx.post(
+            "http://127.0.0.1:11434/api/generate",
+            json={
+                "model": "llava",
+                "prompt": prompt,
+                "images": [img_b64],
+                "stream": False,
+                "options": {"temperature": 0.3, "num_predict": 200},
+            },
+            timeout=60,
+        )
+        if resp.status_code == 200:
+            description = resp.json().get("response", "").strip()
+            if description:
+                # Clean up — remove quotes, "Sure!", meta-text
+                description = description.strip('"\'')
+                for prefix in ["Sure!", "Here's", "This photo shows", "The image shows"]:
+                    if description.lower().startswith(prefix.lower()):
+                        description = description[len(prefix):].lstrip(" :,")
+                # Prepend trigger word
+                return f"{trigger}, {description}"
+    except Exception as e:
+        log.debug("Vision caption failed for %s: %s", img_path.name, e)
+    return None
 
 
 def get_trigger_word(persona_name: str) -> str:
@@ -281,7 +362,7 @@ def train_lora(persona_name: str, on_progress: callable | None = None) -> dict:
         return {"error": status["recommendation"], "status": status}
 
     # Auto-caption if needed
-    caption_status = auto_caption_images(persona_name, config.get("trigger_word"))
+    auto_caption_images(persona_name, config.get("trigger_word"))
 
     try:
         import importlib.util

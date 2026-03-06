@@ -4,7 +4,7 @@ Stage 1: EXIF extraction + face detection + quality scoring + auto-sort
 Stage 2: Vision-model captioning focused on subject's physical appearance
 
 Usage:
-    python scripts/curate_training_images.py --source "C:/Users/RayKetcham/Downloads/New folder"
+    python scripts/curate_training_images.py --source "~/Downloads/training_photos"
     python scripts/curate_training_images.py --caption   # run vision captioning on curated images
 """
 

@@ -17,7 +17,6 @@ import gc
 import json
 import logging
 import math
-import os
 import random
 import time
 from pathlib import Path
@@ -65,7 +64,10 @@ class LoRADataset(Dataset):
 
         log.info("Dataset: %d image-caption pairs from %s", len(self.image_paths), image_dir)
 
-        # Image transforms
+        self.transform = self._build_transform(resolution, center_crop, random_flip)
+
+    @staticmethod
+    def _build_transform(resolution, center_crop=True, random_flip=True):
         xforms = []
         if center_crop:
             xforms.append(transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR))
@@ -76,15 +78,92 @@ class LoRADataset(Dataset):
             xforms.append(transforms.RandomHorizontalFlip())
         xforms.append(transforms.ToTensor())
         xforms.append(transforms.Normalize([0.5], [0.5]))  # [-1, 1]
-        self.transform = transforms.Compose(xforms)
+        return transforms.Compose(xforms)
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img = Image.open(self.image_paths[idx]).convert("RGB")
-        pixel_values = self.transform(img)
-        return {"pixel_values": pixel_values, "caption": self.captions[idx]}
+        img_path = self.image_paths[idx]
+        try:
+            img = Image.open(img_path).convert("RGB")
+            pixel_values = self.transform(img)
+            return {"pixel_values": pixel_values, "caption": self.captions[idx]}
+        except Exception as e:
+            log.error("FAILED loading image [%d]: %s — %s: %s", idx, img_path.name, type(e).__name__, e)
+            # Return a black image + caption so training doesn't crash
+            fallback = torch.zeros(3, self.resolution, self.resolution)
+            return {"pixel_values": fallback, "caption": self.captions[idx]}
+
+
+# ---------------------------------------------------------------------------
+# Prior Preservation — regularization images
+# ---------------------------------------------------------------------------
+
+def generate_regularization_images(
+    output_dir: str | Path,
+    base_model: str = "stabilityai/stable-diffusion-xl-base-1.0",
+    class_prompt: str = "woman, portrait, photorealistic, natural lighting",
+    num_images: int = 200,
+    resolution: int = 1024,
+    batch_size: int = 1,
+    seed: int = 0,
+) -> Path:
+    """Generate regularization images from base SDXL (no LoRA).
+
+    These images represent the model's prior knowledge of 'woman' — training
+    with them prevents the model from forgetting what a generic woman looks like,
+    which forces the LoRA to only encode what's UNIQUE about the subject.
+    """
+    from diffusers import StableDiffusionXLPipeline
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if we already have enough
+    existing = list(output_dir.glob("*.jpg")) + list(output_dir.glob("*.png"))
+    if len(existing) >= num_images:
+        log.info("Prior preservation: %d images already exist in %s (need %d), skipping generation",
+                 len(existing), output_dir, num_images)
+        return output_dir
+
+    need = num_images - len(existing)
+    log.info("Generating %d regularization images (class: '%s')...", need, class_prompt)
+
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        base_model, torch_dtype=torch.float16, variant="fp16",
+    ).to("cuda")
+    pipe.set_progress_bar_config(disable=True)
+
+    generator = torch.Generator("cuda").manual_seed(seed)
+    start_idx = len(existing)
+
+    for i in range(need):
+        img = pipe(
+            prompt=class_prompt,
+            num_inference_steps=30,
+            guidance_scale=7.5,
+            width=resolution,
+            height=resolution,
+            generator=generator,
+        ).images[0]
+
+        img_path = output_dir / f"reg_{start_idx + i:04d}.jpg"
+        img.save(img_path, quality=95)
+
+        # Write matching caption
+        caption_path = img_path.with_suffix(".txt")
+        caption_path.write_text(class_prompt, encoding="utf-8")
+
+        if (i + 1) % 10 == 0:
+            log.info("  Generated %d/%d regularization images", i + 1, need)
+
+    del pipe
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    log.info("Regularization images ready: %s (%d total)", output_dir, num_images)
+    return output_dir
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +190,10 @@ def train_lora(
     save_every_n_steps: int = 250,
     seed: int = 42,
     resume: bool = False,
+    prior_preservation: bool = False,
+    prior_loss_weight: float = 1.0,
+    prior_class_prompt: str = "woman, portrait, photorealistic, natural lighting",
+    prior_num_images: int = 200,
     on_progress: callable | None = None,
 ) -> dict:
     """Train a LoRA on SDXL for a persona.
@@ -139,7 +222,7 @@ def train_lora(
     Returns:
         Dict with training results and output path.
     """
-    from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionXLPipeline
+    from diffusers import AutoencoderKL, DDPMScheduler
     from peft import LoraConfig, get_peft_model
     from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
@@ -149,9 +232,19 @@ def train_lora(
     # Resolve paths
     from vox.config import MODELS_DIR, PROJECT_ROOT
     if image_dir is None:
-        image_dir = PROJECT_ROOT / "persona" / "training" / slug / "sort_keep"
-        if not image_dir.exists():
-            image_dir = PROJECT_ROOT / "persona" / "training" / slug
+        # Prefer stage1_faces (curated, captioned) > combined > sort_keep > base
+        base_training = PROJECT_ROOT / "persona" / "training" / slug
+        stage1 = base_training / "stage1_faces"
+        combined = base_training / "combined"
+        keep = base_training / "sort_keep"
+        if stage1.exists() and any(stage1.glob("*.txt")):
+            image_dir = stage1
+        elif combined.exists() and any(combined.glob("*.txt")):
+            image_dir = combined
+        elif keep.exists():
+            image_dir = keep
+        else:
+            image_dir = base_training
     image_dir = Path(image_dir)
 
     if output_dir is None:
@@ -166,6 +259,8 @@ def train_lora(
     log.info("  Output: %s", output_dir)
     log.info("  Model: %s", base_model)
     log.info("  Epochs: %d, LR: %s, Rank: %d", epochs, learning_rate, lora_rank)
+    if prior_preservation:
+        log.info("  Prior preservation: ON (weight=%.2f, %d reg images)", prior_loss_weight, prior_num_images)
     log.info("=" * 60)
 
     # Set seeds
@@ -178,6 +273,25 @@ def train_lora(
     weight_dtype = torch.float16
 
     # --- Load dataset ---
+    # Pre-flight: validate all images before starting (catches truncated/corrupt files)
+    log.info("Pre-flight: validating %d images...", len(list(image_dir.glob("*.txt"))))
+    bad_images = []
+    for img_path in sorted(image_dir.iterdir()):
+        if img_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+            continue
+        try:
+            with Image.open(img_path) as img:
+                img.verify()  # Checks file integrity without fully loading
+        except Exception as e:
+            log.warning("BAD IMAGE: %s — %s: %s", img_path.name, type(e).__name__, e)
+            bad_images.append((img_path.name, str(e)))
+    if bad_images:
+        log.warning("Found %d bad images (will use black fallback during training):", len(bad_images))
+        for name, err in bad_images:
+            log.warning("  %s: %s", name, err)
+    else:
+        log.info("Pre-flight: all images valid")
+
     dataset = LoRADataset(image_dir, resolution=resolution)
     if len(dataset) == 0:
         return {"error": f"No image-caption pairs found in {image_dir}"}
@@ -189,6 +303,32 @@ def train_lora(
         num_workers=0,  # Windows compatibility
         pin_memory=True,
     )
+
+    # --- Prior preservation: generate + load regularization images ---
+    prior_dataloader = None
+    if prior_preservation:
+        reg_dir = output_dir / "regularization"
+        generate_regularization_images(
+            output_dir=reg_dir,
+            base_model=base_model,
+            class_prompt=prior_class_prompt,
+            num_images=prior_num_images,
+            resolution=resolution,
+            seed=seed + 1000,
+        )
+        prior_dataset = LoRADataset(reg_dir, resolution=resolution, random_flip=True)
+        if len(prior_dataset) == 0:
+            log.warning("Prior preservation: no reg images found, disabling")
+            prior_preservation = False
+        else:
+            prior_dataloader = DataLoader(
+                prior_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=0,
+                pin_memory=True,
+            )
+            log.info("Prior preservation: %d regularization images loaded", len(prior_dataset))
 
     total_steps = math.ceil(len(dataset) / batch_size) * epochs
     effective_steps = total_steps // gradient_accumulation
@@ -325,6 +465,26 @@ def train_lora(
     if train_text_encoder:
         text_encoder_1.train()
 
+    def _vram_mb():
+        """Get current GPU VRAM usage in MB."""
+        try:
+            allocated = torch.cuda.memory_allocated() / 1024 / 1024
+            reserved = torch.cuda.memory_reserved() / 1024 / 1024
+            return allocated, reserved
+        except Exception:
+            return 0.0, 0.0
+
+    alloc, res = _vram_mb()
+    log.info("VRAM before training: %.0fMB allocated, %.0fMB reserved (of 24576MB)", alloc, res)
+
+    # Prior preservation: create an infinite iterator over reg images
+    _prior_iter = None
+    if prior_preservation and prior_dataloader is not None:
+        def _cycle(dl):
+            while True:
+                yield from dl
+        _prior_iter = iter(_cycle(prior_dataloader))
+
     for epoch in range(start_epoch, epochs):
         epoch_loss = 0.0
         epoch_steps = 0
@@ -335,108 +495,177 @@ def train_lora(
             if absolute_step < start_step:
                 continue
 
-            pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
-            captions = batch["caption"]
+            # Track which image we're on for crash diagnostics
+            current_img_idx = step  # DataLoader batch index
+            current_caption = batch["caption"][0][:80] if batch["caption"] else "?"
 
-            # Encode images to latents in fp32 (VAE NaN in fp16)
-            with torch.no_grad():
-                latents = vae.encode(pixel_values).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
+            try:
+                pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
+                captions = batch["caption"]
 
-            # Noise in float32
-            noise = torch.randn_like(latents)
-            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=device).long()
-            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-            # Encode text
-            tokens_1 = tokenizer_1(captions, padding="max_length", max_length=tokenizer_1.model_max_length, truncation=True, return_tensors="pt").to(device)
-            tokens_2 = tokenizer_2(captions, padding="max_length", max_length=tokenizer_2.model_max_length, truncation=True, return_tensors="pt").to(device)
-
-            # Text encoder forward
-            if train_text_encoder:
-                encoder_hidden_states_1 = text_encoder_1(tokens_1.input_ids, output_hidden_states=True).hidden_states[-2]
-            else:
+                # Encode images to latents in fp32 (VAE NaN in fp16)
                 with torch.no_grad():
+                    latents = vae.encode(pixel_values).latent_dist.sample()
+                    latents = latents * vae.config.scaling_factor
+
+                # Noise in float32
+                noise = torch.randn_like(latents)
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=device).long()
+                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+                # Encode text
+                tokens_1 = tokenizer_1(captions, padding="max_length", max_length=tokenizer_1.model_max_length, truncation=True, return_tensors="pt").to(device)
+                tokens_2 = tokenizer_2(captions, padding="max_length", max_length=tokenizer_2.model_max_length, truncation=True, return_tensors="pt").to(device)
+
+                # Text encoder forward
+                if train_text_encoder:
                     encoder_hidden_states_1 = text_encoder_1(tokens_1.input_ids, output_hidden_states=True).hidden_states[-2]
+                else:
+                    with torch.no_grad():
+                        encoder_hidden_states_1 = text_encoder_1(tokens_1.input_ids, output_hidden_states=True).hidden_states[-2]
 
-            with torch.no_grad():
-                te2_output = text_encoder_2(tokens_2.input_ids, output_hidden_states=True)
-                encoder_hidden_states_2 = te2_output.hidden_states[-2]
-                pooled_output = te2_output[0]
+                with torch.no_grad():
+                    te2_output = text_encoder_2(tokens_2.input_ids, output_hidden_states=True)
+                    encoder_hidden_states_2 = te2_output.hidden_states[-2]
+                    pooled_output = te2_output[0]
 
-            # Concatenate encoder hidden states (SDXL uses both)
-            encoder_hidden_states = torch.cat([encoder_hidden_states_1, encoder_hidden_states_2], dim=-1)
+                # Concatenate encoder hidden states (SDXL uses both)
+                encoder_hidden_states = torch.cat([encoder_hidden_states_1, encoder_hidden_states_2], dim=-1)
 
-            # SDXL additional conditioning
-            add_time_ids = _compute_time_ids(resolution, resolution, 0, 0, resolution, resolution, device, torch.float32)
-            add_time_ids = add_time_ids.repeat(latents.shape[0], 1)
+                # SDXL additional conditioning
+                add_time_ids = _compute_time_ids(resolution, resolution, 0, 0, resolution, resolution, device, torch.float32)
+                add_time_ids = add_time_ids.repeat(latents.shape[0], 1)
 
-            added_cond_kwargs = {
-                "text_embeds": pooled_output.float(),
-                "time_ids": add_time_ids,
-            }
+                added_cond_kwargs = {
+                    "text_embeds": pooled_output.float(),
+                    "time_ids": add_time_ids,
+                }
 
-            # Forward pass — UNet weights are mixed (frozen fp16 + LoRA fp32)
-            # Use autocast so frozen layers run fp16, LoRA layers run fp32
-            with torch.amp.autocast("cuda", dtype=torch.float16):
-                model_pred = unet(
-                    noisy_latents,
-                    timesteps,
-                    encoder_hidden_states,
-                    added_cond_kwargs=added_cond_kwargs,
-                ).sample
+                # Forward pass — UNet weights are mixed (frozen fp16 + LoRA fp32)
+                # Use autocast so frozen layers run fp16, LoRA layers run fp32
+                with torch.amp.autocast("cuda", dtype=torch.float16):
+                    model_pred = unet(
+                        noisy_latents,
+                        timesteps,
+                        encoder_hidden_states,
+                        added_cond_kwargs=added_cond_kwargs,
+                    ).sample
 
-            # Loss in float32 (model_pred may be fp16 from autocast)
-            loss = F.mse_loss(model_pred.float(), noise, reduction="mean")
-            loss = loss / gradient_accumulation
+                # Loss in float32 (model_pred may be fp16 from autocast)
+                subject_loss = F.mse_loss(model_pred.float(), noise, reduction="mean")
+                loss = subject_loss
 
-            # Backward with scaler
-            scaler.scale(loss).backward()
+                # Prior preservation loss — regularization against base model drift
+                if prior_preservation and _prior_iter is not None:
+                    prior_batch = next(_prior_iter)
+                    prior_pixels = prior_batch["pixel_values"].to(device, dtype=torch.float32)
+                    prior_captions = prior_batch["caption"]
 
-            loss_val = loss.item() * gradient_accumulation
-            if not math.isnan(loss_val):
-                epoch_loss += loss_val
-            epoch_steps += 1
-            global_step += 1
+                    with torch.no_grad():
+                        prior_latents = vae.encode(prior_pixels).latent_dist.sample()
+                        prior_latents = prior_latents * vae.config.scaling_factor
 
-            # Gradient accumulation step
-            if global_step % gradient_accumulation == 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                if scheduler:
-                    scheduler.step()
-                optimizer.zero_grad()
+                    prior_noise = torch.randn_like(prior_latents)
+                    prior_timesteps = torch.randint(
+                        0, noise_scheduler.config.num_train_timesteps,
+                        (prior_latents.shape[0],), device=device,
+                    ).long()
+                    prior_noisy = noise_scheduler.add_noise(prior_latents, prior_noise, prior_timesteps)
 
-            # Logging
-            if global_step % 10 == 0:
-                avg_loss = epoch_loss / max(epoch_steps, 1)
-                elapsed = time.time() - start_time
-                steps_per_sec = global_step / max(elapsed, 1)
-                remaining = (total_steps - global_step) / max(steps_per_sec, 0.001)
-                current_lr = optimizer.param_groups[0]["lr"]
+                    # Encode prior captions
+                    pt1 = tokenizer_1(prior_captions, padding="max_length", max_length=tokenizer_1.model_max_length, truncation=True, return_tensors="pt").to(device)
+                    pt2 = tokenizer_2(prior_captions, padding="max_length", max_length=tokenizer_2.model_max_length, truncation=True, return_tensors="pt").to(device)
 
-                log.info(
-                    "Epoch %d/%d | Step %d/%d | Loss: %.4f | LR: %.2e | %.1f steps/s | ETA: %s",
-                    epoch + 1, epochs, global_step, total_steps, avg_loss,
-                    current_lr, steps_per_sec, _format_time(remaining),
+                    with torch.no_grad():
+                        phs1 = text_encoder_1(pt1.input_ids, output_hidden_states=True).hidden_states[-2]
+                        pte2 = text_encoder_2(pt2.input_ids, output_hidden_states=True)
+                        phs2 = pte2.hidden_states[-2]
+                        p_pooled = pte2[0]
+
+                    prior_hidden = torch.cat([phs1, phs2], dim=-1)
+                    prior_add_time_ids = _compute_time_ids(resolution, resolution, 0, 0, resolution, resolution, device, torch.float32)
+                    prior_add_time_ids = prior_add_time_ids.repeat(prior_latents.shape[0], 1)
+                    prior_cond = {"text_embeds": p_pooled.float(), "time_ids": prior_add_time_ids}
+
+                    with torch.amp.autocast("cuda", dtype=torch.float16):
+                        prior_pred = unet(prior_noisy, prior_timesteps, prior_hidden, added_cond_kwargs=prior_cond).sample
+
+                    prior_loss = F.mse_loss(prior_pred.float(), prior_noise, reduction="mean")
+                    loss = subject_loss + prior_loss_weight * prior_loss
+
+                loss = loss / gradient_accumulation
+
+                # Backward with scaler
+                scaler.scale(loss).backward()
+
+                loss_val = loss.item() * gradient_accumulation
+                if not math.isnan(loss_val):
+                    epoch_loss += loss_val
+                epoch_steps += 1
+                global_step += 1
+
+                # Gradient accumulation step
+                if global_step % gradient_accumulation == 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    if scheduler:
+                        scheduler.step()
+                    optimizer.zero_grad()
+
+                # Logging (every 10 steps, with VRAM)
+                if global_step % 10 == 0:
+                    avg_loss = epoch_loss / max(epoch_steps, 1)
+                    elapsed = time.time() - start_time
+                    steps_per_sec = global_step / max(elapsed, 1)
+                    remaining = (total_steps - global_step) / max(steps_per_sec, 0.001)
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    alloc, res = _vram_mb()
+
+                    log.info(
+                        "Epoch %d/%d | Step %d/%d | Loss: %.4f | LR: %.2e | %.1f steps/s | ETA: %s | VRAM: %.0f/%.0fMB",
+                        epoch + 1, epochs, global_step, total_steps, avg_loss,
+                        current_lr, steps_per_sec, _format_time(remaining), alloc, res,
+                    )
+                    loss_history.append({"step": global_step, "loss": avg_loss, "lr": current_lr})
+
+                    if on_progress:
+                        on_progress(global_step, total_steps, avg_loss, epoch + 1)
+
+                # Save checkpoint
+                if global_step % save_every_n_steps == 0:
+                    _save_checkpoint(
+                        output_dir, global_step, unet, text_encoder_1 if train_text_encoder else None,
+                        optimizer, loss_history, slug,
+                    )
+
+                # Track best loss
+                if not math.isnan(loss_val) and loss_val < best_loss:
+                    best_loss = loss_val
+
+            except torch.cuda.OutOfMemoryError:
+                alloc, res = _vram_mb()
+                log.error(
+                    "!!! OOM CRASH at epoch %d, step %d (global %d) | VRAM: %.0fMB/%.0fMB | Caption: %s",
+                    epoch + 1, step, global_step, alloc, res, current_caption,
                 )
-                loss_history.append({"step": global_step, "loss": avg_loss, "lr": current_lr})
+                log.error("Clearing CUDA cache and skipping this batch...")
+                torch.cuda.empty_cache()
+                gc.collect()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+                epoch_steps += 1
+                continue
 
-                if on_progress:
-                    on_progress(global_step, total_steps, avg_loss, epoch + 1)
-
-            # Save checkpoint
-            if global_step % save_every_n_steps == 0:
-                _save_checkpoint(
-                    output_dir, global_step, unet, text_encoder_1 if train_text_encoder else None,
-                    optimizer, loss_history, slug,
+            except Exception as e:
+                log.error(
+                    "!!! CRASH at epoch %d, step %d (global %d) | %s: %s | Caption: %s",
+                    epoch + 1, step, global_step, type(e).__name__, e, current_caption,
                 )
-
-            # Track best loss
-            if not math.isnan(loss_val) and loss_val < best_loss:
-                best_loss = loss_val
+                import traceback
+                log.error("Full traceback:\n%s", traceback.format_exc())
+                raise
 
         avg_epoch_loss = epoch_loss / max(epoch_steps, 1)
         epoch_losses.append(avg_epoch_loss)
@@ -470,6 +699,8 @@ def train_lora(
         "image_count": len(dataset),
         "training_time_seconds": elapsed,
         "train_text_encoder": train_text_encoder,
+        "prior_preservation": prior_preservation,
+        "prior_loss_weight": prior_loss_weight if prior_preservation else 0,
     }
     with open(output_dir / "training_log.json", "w") as f:
         json.dump(training_log, f, indent=2)
@@ -571,13 +802,23 @@ def main():
     parser.add_argument("--save-every", type=int, default=250, help="Save checkpoint every N steps")
     parser.add_argument("--no-text-encoder", action="store_true", help="Skip text encoder training")
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
+    parser.add_argument("--prior-preservation", action="store_true", help="Enable prior preservation (regularization)")
+    parser.add_argument("--prior-weight", type=float, default=1.0, help="Prior preservation loss weight (default: 1.0)")
+    parser.add_argument("--prior-class-prompt", default="woman, portrait, photorealistic, natural lighting",
+                        help="Class prompt for regularization images")
+    parser.add_argument("--prior-num-images", type=int, default=200, help="Number of regularization images (default: 200)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    # Force unbuffered output so crash logs are visible
+    import sys
+    sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+    sys.stderr.reconfigure(line_buffering=True) if hasattr(sys.stderr, 'reconfigure') else None
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    handler.flush = lambda: sys.stderr.flush()
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
     def progress_cb(step, total, loss, epoch):
         pct = step / total * 100
@@ -597,6 +838,10 @@ def main():
         save_every_n_steps=args.save_every,
         train_text_encoder=not args.no_text_encoder,
         resume=args.resume,
+        prior_preservation=args.prior_preservation,
+        prior_loss_weight=args.prior_weight,
+        prior_class_prompt=args.prior_class_prompt,
+        prior_num_images=args.prior_num_images,
         seed=args.seed,
         on_progress=progress_cb,
     )
@@ -605,7 +850,7 @@ def main():
     if result.get("error"):
         print(f"ERROR: {result['error']}")
     else:
-        print(f"Training complete!")
+        print("Training complete!")
         print(f"  Output: {result['output_dir']}")
         print(f"  Trigger: {result['trigger_word']}")
         print(f"  Epochs: {result['epochs']}")
