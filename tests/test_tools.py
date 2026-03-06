@@ -136,6 +136,9 @@ def test_intent_detection_no_false_positives(text):
     ("generate_image", "create an image of a sunset"),
     ("generate_image", "draw me a picture of a dog"),
     ("generate_image", "paint me something beautiful"),
+    ("take_screenshot", "take a screenshot"),
+    ("take_screenshot", "capture my screen"),
+    ("take_screenshot", "what's on my screen"),
 ])
 def test_validate_tool_call_allows_relevant(tool, text):
     assert validate_tool_call(tool, text) is True
@@ -265,6 +268,112 @@ def test_detect_all_intents_no_match():
     """Non-tool text should return empty list."""
     intents = detect_all_intents("tell me about Python programming")
     assert intents == []
+
+
+# ---------------------------------------------------------------------------
+# Negation-aware intent detection (#74)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "don't search for that",
+    "do not search for anything",
+    "no I don't need a search",
+    "skip the search",
+    "stop searching",
+    "never search for that",
+])
+def test_negation_suppresses_search(text):
+    intent = detect_intent(text)
+    assert intent is None or intent.tool_name != "web_search"
+
+
+@pytest.mark.parametrize("text", [
+    "don't check the weather",
+    "I don't need the weather",
+    "no weather please",
+    "skip the forecast",
+])
+def test_negation_suppresses_weather(text):
+    intent = detect_intent(text)
+    assert intent is None or intent.tool_name != "get_weather"
+
+
+@pytest.mark.parametrize("text", [
+    "don't email that",
+    "do not send the email",
+    "no email",
+    "skip the mail",
+])
+def test_negation_suppresses_email(text):
+    intent = detect_intent(text)
+    assert intent is None or intent.tool_name != "send_email"
+
+
+def test_negation_does_not_affect_positive():
+    """Positive requests should still work fine."""
+    intent = detect_intent("search for pizza recipes")
+    assert intent is not None
+    assert intent.tool_name == "web_search"
+
+
+# ---------------------------------------------------------------------------
+# Deep search detection (#81)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expect_deep", [
+    ("research quantum computing", True),
+    ("deep search for AI safety papers", True),
+    ("do a thorough search on climate change", True),
+    ("give me a comprehensive search on Python 3.12", True),
+    ("search for pizza recipes", False),
+    ("find me a recipe for tacos", False),
+    ("google best restaurants nearby", False),
+])
+def test_deep_search_detection(text, expect_deep):
+    """Deep search keywords should set deep=True in args."""
+    intent = detect_intent(text)
+    assert intent is not None
+    assert intent.tool_name == "web_search"
+    assert intent.args.get("deep", False) == expect_deep
+
+
+# ---------------------------------------------------------------------------
+# Follow-up detection (#79)
+# ---------------------------------------------------------------------------
+
+def test_followup_another_one():
+    """'another one' after an image request should repeat."""
+    import vox.tools as t
+    # Simulate a prior image intent
+    t._last_tool = "generate_image"
+    t._last_tool_args = {"prompt": "sunset", "_selfie": False}
+    intent = detect_intent("another one")
+    assert intent is not None
+    assert intent.tool_name == "generate_image"
+    assert intent.args["prompt"] == "sunset"
+    # Clean up
+    t._last_tool = None
+    t._last_tool_args = {}
+
+
+def test_followup_again():
+    """'again' should repeat last tool."""
+    import vox.tools as t
+    t._last_tool = "web_search"
+    t._last_tool_args = {"query": "RTX 4090 specs"}
+    intent = detect_intent("again")
+    assert intent is not None
+    assert intent.tool_name == "web_search"
+    t._last_tool = None
+    t._last_tool_args = {}
+
+
+def test_followup_no_last_tool():
+    """'another one' with no previous tool should not match."""
+    import vox.tools as t
+    t._last_tool = None
+    intent = detect_intent("another one")
+    assert intent is None
 
 
 def test_detect_all_intents_no_duplicates():
@@ -681,3 +790,853 @@ def test_nsfw_keywords_route_to_nsfw_model(monkeypatch):
     # Without unlock → always SFW
     assert _should_use_nsfw_model("nude portrait", False, nsfw_unlocked=False) is False
     assert _should_use_nsfw_model("topless at the beach", True, nsfw_unlocked=False) is False
+
+
+# ---------------------------------------------------------------------------
+# System commands (#42)
+# ---------------------------------------------------------------------------
+
+def test_run_command_disk_space():
+    result = execute_tool("run_command", {"command": "disk_space"})
+    # Should return disk info (drive letters or df output)
+    assert len(result) > 10
+
+
+def test_run_command_unknown():
+    result = execute_tool("run_command", {"command": "rm -rf /"})
+    assert "Unknown command" in result or "Available" in result
+
+
+def test_run_command_empty():
+    result = execute_tool("run_command", {"command": ""})
+    assert "Available" in result
+
+
+def test_disk_space_intent():
+    intent = detect_intent("how much disk space do I have")
+    assert intent is not None
+    assert intent.tool_name == "run_command"
+    assert intent.args["command"] == "disk_space"
+
+
+def test_gpu_processes_intent():
+    intent = detect_intent("run nvidia-smi")
+    assert intent is not None
+    assert intent.tool_name == "run_command"
+    assert intent.args["command"] == "gpu_processes"
+
+
+# ---------------------------------------------------------------------------
+# Notes / To-Do (#43)
+# ---------------------------------------------------------------------------
+
+def test_add_note(tmp_path, monkeypatch):
+    """add_note should save a note to the JSON store."""
+    monkeypatch.setattr("vox.tools._NOTES_FILE", tmp_path / "notes.json")
+    result = execute_tool("add_note", {"text": "buy oil filter"})
+    assert "saved" in result.lower() or "got it" in result.lower()
+    assert "buy oil filter" in result
+
+
+def test_list_notes(tmp_path, monkeypatch):
+    """list_notes should return saved notes."""
+    monkeypatch.setattr("vox.tools._NOTES_FILE", tmp_path / "notes.json")
+    execute_tool("add_note", {"text": "buy oil filter"})
+    execute_tool("add_note", {"text": "pick up parts"})
+    result = execute_tool("list_notes", {})
+    assert "buy oil filter" in result
+    assert "pick up parts" in result
+
+
+def test_complete_note(tmp_path, monkeypatch):
+    """complete_note should mark a note as done."""
+    monkeypatch.setattr("vox.tools._NOTES_FILE", tmp_path / "notes.json")
+    execute_tool("add_note", {"text": "test note"})
+    result = execute_tool("complete_note", {"note_id": 1})
+    assert "done" in result.lower() or "complete" in result.lower()
+
+
+def test_note_intent_detection():
+    """Note-related phrases should trigger add_note."""
+    intent = detect_intent("take a note: buy milk")
+    assert intent is not None
+    assert intent.tool_name == "add_note"
+    assert "buy milk" in intent.args.get("text", "")
+
+
+def test_list_notes_intent():
+    intent = detect_intent("what are my notes")
+    assert intent is not None
+    assert intent.tool_name == "list_notes"
+
+
+# ---------------------------------------------------------------------------
+# Screenshot intent detection (#41)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "take a screenshot",
+    "screenshot please",
+    "capture my screen",
+    "what's on my screen",
+])
+def test_screenshot_intent(text):
+    intent = detect_intent(text)
+    assert intent is not None
+    assert intent.tool_name == "take_screenshot"
+
+
+# ---------------------------------------------------------------------------
+# Batch image count extraction (#57)
+# ---------------------------------------------------------------------------
+
+def test_extract_image_count_basic():
+    from vox.tools import _extract_image_count
+    assert _extract_image_count("give me 5 pictures of cats") == 5
+    assert _extract_image_count("generate 3 images of dogs") == 3
+    assert _extract_image_count("take a selfie") == 1
+    assert _extract_image_count("draw me a picture of the moon") == 1
+
+
+def test_extract_image_count_capped():
+    from vox.tools import _extract_image_count
+    assert _extract_image_count("make 50 images of cats") == 10
+
+
+def test_batch_intent_detection():
+    """Count-based image requests should include count in args."""
+    intent = detect_intent("generate 5 images of a sunset over the ocean")
+    assert intent is not None
+    assert intent.tool_name == "generate_image"
+    assert intent.args.get("count", 1) == 5
+
+
+# ---------------------------------------------------------------------------
+# Image progress callback
+# ---------------------------------------------------------------------------
+
+def test_image_progress_callback_settable():
+    """The progress callback global should be settable and clearable."""
+    from vox import tools as tools_mod
+    assert tools_mod._image_progress_fn is None
+    calls = []
+    tools_mod._image_progress_fn = lambda step, total: calls.append((step, total))
+    tools_mod._image_progress_fn(3, 30)
+    assert calls == [(3, 30)]
+    tools_mod._image_progress_fn = None
+    assert tools_mod._image_progress_fn is None
+
+
+# ---------------------------------------------------------------------------
+# Contacts intent detection (#47)
+# ---------------------------------------------------------------------------
+
+def test_add_contact_intent():
+    intent = detect_intent("add contact: Mike, mechanic, 555-1234")
+    assert intent is not None
+    assert intent.tool_name == "add_contact"
+
+
+def test_lookup_contact_intent():
+    intent = detect_intent("what's John's phone number?")
+    assert intent is not None
+    assert intent.tool_name == "lookup_contact"
+
+
+def test_lookup_contact_email():
+    intent = detect_intent("what is Sarah's email address?")
+    assert intent is not None
+    assert intent.tool_name == "lookup_contact"
+
+
+def test_list_contacts_intent():
+    intent = detect_intent("show my contacts")
+    assert intent is not None
+    assert intent.tool_name == "list_contacts"
+
+
+def test_remove_contact_intent():
+    intent = detect_intent("remove contact #3")
+    assert intent is not None
+    assert intent.tool_name == "remove_contact"
+    assert intent.args.get("contact_id") == 3
+
+
+def test_contact_tool_execution(tmp_path, monkeypatch):
+    monkeypatch.setattr("vox.contacts._CONTACTS_FILE", tmp_path / "contacts.json")
+    result = execute_tool("add_contact", {"name": "Test User", "email": "test@example.com"})
+    assert "saved" in result.lower()
+    result = execute_tool("lookup_contact", {"query": "Test"})
+    assert "Test User" in result
+    result = execute_tool("list_contacts", {})
+    assert "Test User" in result
+    result = execute_tool("remove_contact", {"contact_id": 1})
+    assert "removed" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Clipboard intent detection (#68)
+# ---------------------------------------------------------------------------
+
+def test_read_clipboard_intent():
+    intent = detect_intent("what's on my clipboard?")
+    assert intent is not None
+    assert intent.tool_name == "read_clipboard"
+
+
+def test_read_clipboard_intent_alt():
+    intent = detect_intent("read my clipboard")
+    assert intent is not None
+    assert intent.tool_name == "read_clipboard"
+
+
+def test_write_clipboard_intent():
+    intent = detect_intent("copy that to clipboard")
+    assert intent is not None
+    assert intent.tool_name == "write_clipboard"
+
+
+def test_clipboard_execution():
+    result = execute_tool("read_clipboard", {})
+    # Should return something (either content or "empty")
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Response caching (#36)
+# ---------------------------------------------------------------------------
+
+def test_cache_hit():
+    from vox.tools import _tool_cache, cache_bust, _cache_key, _cache_set
+    cache_bust()  # clear
+    # Manually populate cache
+    _cache_set("get_weather", {"location": "NYC"}, "Sunny and 72F")
+    # execute_tool should return cached result
+    result = execute_tool("get_weather", {"location": "NYC"})
+    assert result == "Sunny and 72F"
+    cache_bust()
+
+
+def test_cache_bust():
+    from vox.tools import _tool_cache, cache_bust, _cache_set
+    cache_bust()
+    _cache_set("get_weather", {"location": "NYC"}, "Sunny")
+    cache_bust("get_weather")
+    # After bust, cache should be empty for that tool
+    from vox.tools import _cache_get
+    assert _cache_get("get_weather", {"location": "NYC"}) is None
+
+
+def test_cache_bust_all():
+    from vox.tools import cache_bust, _cache_set, _cache_get
+    cache_bust()
+    _cache_set("get_weather", {"location": "NYC"}, "Sunny")
+    _cache_set("get_system_info", {}, "RTX 3090")
+    cache_bust()
+    assert _cache_get("get_weather", {"location": "NYC"}) is None
+    assert _cache_get("get_system_info", {}) is None
+
+
+def test_refresh_busts_cache():
+    """'refresh' keyword should clear cache before detecting intent."""
+    from vox.tools import cache_bust, _cache_set, _cache_get, _tool_cache
+    cache_bust()
+    _cache_set("get_weather", {"location": "NYC"}, "Old weather")
+    # Detecting intent with "refresh" should clear cache
+    detect_intent("refresh the weather")
+    assert _cache_get("get_weather", {"location": "NYC"}) is None
+
+
+def test_non_cached_tools_skip_cache():
+    from vox.tools import _cache_get, cache_bust
+    cache_bust()
+    # generate_image is not in _TOOL_TTL, so should not be cached
+    assert _cache_get("generate_image", {"prompt": "test"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Code runner (#70)
+# ---------------------------------------------------------------------------
+
+def test_calculate_intent():
+    intent = detect_intent("calculate 15 plus 27")
+    assert intent is not None
+    assert intent.tool_name == "run_code"
+
+
+def test_convert_intent():
+    intent = detect_intent("convert 72F to C")
+    assert intent is not None
+    assert intent.tool_name == "run_code"
+
+
+def test_run_python_intent():
+    intent = detect_intent("run python print('hello')")
+    assert intent is not None
+    assert intent.tool_name == "run_code"
+
+
+def test_run_code_math():
+    result = execute_tool("run_code", {"expression": "2 + 2"})
+    assert "4" in result
+
+
+def test_run_code_temp_conversion():
+    result = execute_tool("run_code", {"expression": "72F to C"})
+    assert "22" in result  # 72F = 22.2C
+
+
+def test_run_code_python():
+    result = execute_tool("run_code", {"code": "print(sum(range(10)))"})
+    assert "45" in result
+
+
+def test_run_code_timeout():
+    result = execute_tool("run_code", {"code": "import time; time.sleep(30)"})
+    assert "timed out" in result.lower()
+
+
+def test_run_code_empty():
+    result = execute_tool("run_code", {})
+    assert "no code" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Image upscaling (#64)
+# ---------------------------------------------------------------------------
+
+def test_upscale_intent():
+    intent = detect_intent("upscale this image photo.png")
+    assert intent is not None
+    assert intent.tool_name == "upscale_image"
+
+
+def test_upscale_alt_intent():
+    intent = detect_intent("make this picture bigger")
+    assert intent is not None
+    assert intent.tool_name == "upscale_image"
+
+
+def test_upscale_no_file():
+    result = execute_tool("upscale_image", {})
+    assert "no image" in result.lower()
+
+
+def test_upscale_missing_file():
+    result = execute_tool("upscale_image", {"path": "nonexistent_file.png"})
+    assert "not found" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# File navigator (#32)
+# ---------------------------------------------------------------------------
+
+def test_list_files_intent():
+    intent = detect_intent("what's in my downloads?")
+    assert intent is not None
+    assert intent.tool_name == "list_files"
+    assert intent.args.get("directory") == "downloads"
+
+
+def test_find_file_intent():
+    intent = detect_intent("find that report.pdf")
+    assert intent is not None
+    assert intent.tool_name == "find_file"
+
+
+def test_latest_download_intent():
+    intent = detect_intent("latest download")
+    assert intent is not None
+    assert intent.tool_name == "list_files"
+    assert intent.args.get("sort") == "newest"
+
+
+def test_list_files_execution():
+    # Should return something even if folder is empty
+    result = execute_tool("list_files", {"directory": "downloads"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+def test_find_file_empty():
+    result = execute_tool("find_file", {})
+    assert "what file" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Daily briefing (#29)
+# ---------------------------------------------------------------------------
+
+def test_briefing_intent():
+    intent = detect_intent("good morning")
+    assert intent is not None
+    assert intent.tool_name == "daily_briefing"
+
+
+def test_briefing_execution():
+    result = execute_tool("daily_briefing", {})
+    assert isinstance(result, str)
+    # Should at least have the time
+    assert len(result) > 10
+
+
+def test_upscale_with_pil(tmp_path):
+    """Test actual upscaling with PIL Lanczos fallback."""
+    from PIL import Image
+    # Create a small test image
+    img = Image.new("RGB", (64, 64), color="red")
+    img_path = tmp_path / "test_small.png"
+    img.save(str(img_path))
+    # Monkeypatch DOWNLOADS_DIR to tmp_path
+    import vox.config
+    orig = vox.config.DOWNLOADS_DIR
+    vox.config.DOWNLOADS_DIR = tmp_path
+    try:
+        result = execute_tool("upscale_image", {"path": str(img_path), "scale": 2})
+        assert "upscaled" in result.lower()
+        assert "128x128" in result
+    finally:
+        vox.config.DOWNLOADS_DIR = orig
+
+
+# ---------------------------------------------------------------------------
+# Macros intent detection (#34)
+# ---------------------------------------------------------------------------
+
+def test_run_macro_intent():
+    intent = detect_intent("run my macro morning briefing")
+    assert intent is not None
+    assert intent.tool_name == "run_macro"
+    assert "morning briefing" in intent.args.get("name", "")
+
+
+def test_create_macro_intent():
+    intent = detect_intent("create a macro called morning briefing")
+    assert intent is not None
+    assert intent.tool_name == "add_macro"
+
+
+def test_list_macros_intent():
+    intent = detect_intent("show my macros")
+    assert intent is not None
+    assert intent.tool_name == "list_macros"
+
+
+def test_macro_execution(tmp_path, monkeypatch):
+    monkeypatch.setattr("vox.macros._MACROS_FILE", tmp_path / "macros.json")
+    result = execute_tool("add_macro", {
+        "_raw": "create macro time check: get_current_time",
+    })
+    assert "saved" in result.lower()
+    result = execute_tool("run_macro", {"name": "time check"})
+    assert "time check" in result.lower()
+    result = execute_tool("list_macros", {})
+    assert "time check" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Reminder intent detection + execution
+# ---------------------------------------------------------------------------
+
+def test_set_reminder_intent():
+    intent = detect_intent("remind me in 30 minutes to check the oven")
+    assert intent is not None
+    assert intent.tool_name == "set_reminder"
+
+
+def test_set_reminder_intent_timer():
+    intent = detect_intent("set a timer for 10 minutes")
+    assert intent is not None
+    assert intent.tool_name == "set_reminder"
+
+
+def test_set_reminder_intent_alarm():
+    intent = detect_intent("set an alarm for 2 hours")
+    assert intent is not None
+    assert intent.tool_name == "set_reminder"
+
+
+def test_list_reminders_intent():
+    intent = detect_intent("show my reminders")
+    assert intent is not None
+    assert intent.tool_name == "list_reminders"
+
+
+def test_list_reminders_intent_timers():
+    intent = detect_intent("what are my timers")
+    assert intent is not None
+    assert intent.tool_name == "list_reminders"
+
+
+def test_set_reminder_execution(tmp_path, monkeypatch):
+    monkeypatch.setattr("vox.tools._get_reminders_file", lambda: tmp_path / "reminders.json")
+    result = execute_tool("set_reminder", {"_raw": "remind me in 30 minutes to check the oven"})
+    assert "30 minute" in result
+    assert "check the oven" in result
+
+
+def test_set_reminder_default_time(tmp_path, monkeypatch):
+    monkeypatch.setattr("vox.tools._get_reminders_file", lambda: tmp_path / "reminders.json")
+    result = execute_tool("set_reminder", {"text": "take out the trash"})
+    assert "30 minute" in result  # default
+
+
+def test_list_reminders_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr("vox.tools._get_reminders_file", lambda: tmp_path / "reminders.json")
+    result = execute_tool("list_reminders", {})
+    assert "no pending" in result.lower()
+
+
+def test_list_reminders_with_items(tmp_path, monkeypatch):
+    monkeypatch.setattr("vox.tools._get_reminders_file", lambda: tmp_path / "reminders.json")
+    execute_tool("set_reminder", {"text": "feed the cat", "minutes": 60})
+    result = execute_tool("list_reminders", {})
+    assert "feed the cat" in result
+    assert "1 reminder" in result
+
+
+def test_check_reminders_fires(tmp_path, monkeypatch):
+    import datetime
+    monkeypatch.setattr("vox.tools._get_reminders_file", lambda: tmp_path / "reminders.json")
+    # Set reminder due in the past
+    execute_tool("set_reminder", {"text": "past event", "minutes": 1})
+    # Manually backdate it
+    import json
+    reminders = json.loads((tmp_path / "reminders.json").read_text())
+    reminders[0]["due_at"] = (datetime.datetime.now() - datetime.timedelta(minutes=5)).isoformat()
+    (tmp_path / "reminders.json").write_text(json.dumps(reminders))
+    from vox.tools import check_reminders
+    fired = check_reminders()
+    assert len(fired) == 1
+    assert "past event" in fired[0]
+    # Should be removed after firing
+    fired2 = check_reminders()
+    assert len(fired2) == 0
+
+
+def test_parse_time_offset():
+    from vox.tools import _parse_time_offset
+    assert _parse_time_offset("in 30 minutes") == 30
+    assert _parse_time_offset("in 2 hours") == 120
+    assert _parse_time_offset("5 min") == 5
+    assert _parse_time_offset("no time here") == 0
+
+
+def test_validate_set_reminder():
+    assert validate_tool_call("set_reminder", "remind me to call mom") is True
+    assert validate_tool_call("set_reminder", "what's the weather") is False
+
+
+def test_validate_list_reminders():
+    assert validate_tool_call("list_reminders", "show my reminders") is True
+    assert validate_tool_call("list_reminders", "what's the weather") is False
+
+
+# ---------------------------------------------------------------------------
+# News / RSS
+# ---------------------------------------------------------------------------
+
+def test_news_intent():
+    intent = detect_intent("what's in the news today")
+    assert intent is not None
+    assert intent.tool_name == "get_news"
+
+
+def test_news_intent_tech():
+    intent = detect_intent("show me the tech headlines")
+    assert intent is not None
+    assert intent.tool_name == "get_news"
+
+
+def test_news_intent_negative():
+    intent = detect_intent("what's the weather")
+    assert intent is None or intent.tool_name != "get_news"
+
+
+def test_validate_get_news():
+    assert validate_tool_call("get_news", "what's in the news") is True
+    assert validate_tool_call("get_news", "what's the weather") is False
+
+
+def test_parse_rss():
+    from vox.tools import _parse_rss
+    sample_rss = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+      <channel>
+        <title>Test Feed</title>
+        <item>
+          <title>Breaking: Test Headline</title>
+          <link>https://example.com/article1</link>
+          <description>This is a test article about something important.</description>
+        </item>
+        <item>
+          <title>Another Story</title>
+          <link>https://example.com/article2</link>
+          <description>Second article &lt;b&gt;with HTML&lt;/b&gt; tags.</description>
+        </item>
+      </channel>
+    </rss>"""
+    items = _parse_rss(sample_rss)
+    assert len(items) == 2
+    assert items[0]["title"] == "Breaking: Test Headline"
+    assert items[1]["link"] == "https://example.com/article2"
+    assert "<b>" not in items[1]["description"]
+
+
+def test_parse_rss_atom():
+    from vox.tools import _parse_rss
+    sample_atom = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Atom Feed</title>
+      <entry>
+        <title>Atom Article</title>
+        <link href="https://example.com/atom1"/>
+        <summary>Summary of atom article.</summary>
+      </entry>
+    </feed>"""
+    items = _parse_rss(sample_atom)
+    assert len(items) == 1
+    assert items[0]["title"] == "Atom Article"
+    assert items[0]["link"] == "https://example.com/atom1"
+
+
+def test_parse_rss_empty():
+    from vox.tools import _parse_rss
+    assert _parse_rss("not xml at all") == []
+    assert _parse_rss("<root></root>") == []
+
+
+def test_parse_rss_max_items():
+    from vox.tools import _parse_rss
+    items_xml = "".join(
+        f'<item><title>Item {i}</title><link/><description/></item>'
+        for i in range(20)
+    )
+    rss = f'<rss><channel>{items_xml}</channel></rss>'
+    items = _parse_rss(rss, max_items=3)
+    assert len(items) == 3
+
+
+# ---------------------------------------------------------------------------
+# History condensation (issue #13 — context leak prevention)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Media control
+# ---------------------------------------------------------------------------
+
+def test_media_play_intent():
+    intent = detect_intent("play some music")
+    assert intent is not None
+    assert intent.tool_name == "media_control"
+
+
+def test_media_pause_intent():
+    intent = detect_intent("pause the music")
+    assert intent is not None
+    assert intent.tool_name == "media_control"
+
+
+def test_media_skip_intent():
+    intent = detect_intent("skip this song")
+    assert intent is not None
+    assert intent.tool_name == "media_control"
+
+
+def test_media_now_playing_intent():
+    intent = detect_intent("what's playing")
+    assert intent is not None
+    assert intent.tool_name == "media_control"
+
+
+def test_media_volume_intent():
+    intent = detect_intent("volume up")
+    assert intent is not None
+    assert intent.tool_name == "media_control"
+
+
+def test_validate_media_control():
+    assert validate_tool_call("media_control", "play some music") is True
+    assert validate_tool_call("media_control", "what's the weather") is False
+
+
+# ---------------------------------------------------------------------------
+# Smart home / Home Assistant
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Document search (RAG)
+# ---------------------------------------------------------------------------
+
+def test_search_documents_intent():
+    intent = detect_intent("what does my lease say about pets")
+    assert intent is not None
+    assert intent.tool_name == "search_documents"
+
+
+def test_index_documents_intent():
+    intent = detect_intent("index my documents")
+    assert intent is not None
+    assert intent.tool_name == "index_documents"
+
+
+def test_validate_search_documents():
+    assert validate_tool_call("search_documents", "search my lease for pet policy") is True
+    assert validate_tool_call("search_documents", "what's the weather") is False
+
+
+def test_search_documents_no_deps():
+    """Should gracefully handle missing chromadb."""
+    result = execute_tool("search_documents", {"query": "test query"})
+    assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Smart home / Home Assistant
+# ---------------------------------------------------------------------------
+
+def test_smart_home_turn_on_intent():
+    intent = detect_intent("turn on the living room lights")
+    assert intent is not None
+    assert intent.tool_name == "smart_home"
+
+
+def test_smart_home_thermostat_intent():
+    intent = detect_intent("set thermostat to 72")
+    assert intent is not None
+    assert intent.tool_name == "smart_home"
+
+
+def test_smart_home_lock_intent():
+    intent = detect_intent("lock the front door")
+    assert intent is not None
+    assert intent.tool_name == "smart_home"
+
+
+def test_smart_home_status_intent():
+    intent = detect_intent("is the garage door open?")
+    assert intent is not None
+    assert intent.tool_name == "smart_home"
+
+
+def test_validate_smart_home():
+    assert validate_tool_call("smart_home", "turn off the bedroom light") is True
+    assert validate_tool_call("smart_home", "what's the weather") is False
+
+
+def test_smart_home_not_configured():
+    result = execute_tool("smart_home", {"action": "toggle", "entity_hint": "light", "state": "on"})
+    assert "not configured" in result.lower()
+
+
+def test_guess_domain():
+    from vox.tools import _guess_domain
+    assert _guess_domain("living room light") == "light"
+    assert _guess_domain("ceiling fan") == "fan"
+    assert _guess_domain("smart plug") == "switch"
+    assert _guess_domain("window blinds") == "cover"
+
+
+def test_parse_volume_action():
+    from vox.tools import _parse_volume_action
+    assert _parse_volume_action("volume up") == "volume_up"
+    assert _parse_volume_action("volume down") == "volume_down"
+    assert _parse_volume_action("mute") == "mute"
+    assert _parse_volume_action("unmute") == "unmute"
+    assert _parse_volume_action("louder") == "volume_up"
+    assert _parse_volume_action("softer") == "volume_down"
+
+
+def test_media_now_playing_execution():
+    result = execute_tool("media_control", {"action": "now_playing"})
+    assert isinstance(result, str)
+
+
+def test_media_unknown_action():
+    result = execute_tool("media_control", {"action": "bogus"})
+    assert "unknown" in result.lower() or "Unknown" in result
+
+
+# ---------------------------------------------------------------------------
+# Search backend pluggable architecture
+# ---------------------------------------------------------------------------
+
+def test_search_ddg_returns_tuple():
+    from vox.tools import _search_ddg
+    # Just verify the function signature works (actual network call may fail)
+    try:
+        results, urls = _search_ddg("test query")
+        assert isinstance(results, list)
+        assert isinstance(urls, list)
+    except Exception:
+        pass  # Network may not be available in CI
+
+
+def test_search_brave_no_key():
+    from vox.tools import _search_brave
+    # Without API key, should return empty
+    results, urls = _search_brave("test")
+    assert results == []
+    assert urls == []
+
+
+def test_search_searxng_no_url():
+    from vox.tools import _search_searxng
+    # Without URL configured, should return empty
+    results, urls = _search_searxng("test")
+    assert results == []
+    assert urls == []
+
+
+def test_search_fallback(monkeypatch):
+    """If primary engine fails, falls back to DDG."""
+    monkeypatch.setattr("vox.config.SEARCH_ENGINE", "brave")
+    monkeypatch.setattr("vox.config.BRAVE_API_KEY", "fake-key")
+    # Brave will fail (bad key), should fall back to DDG
+    result = execute_tool("web_search", {"query": "test"})
+    assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# History condensation (issue #13 — context leak prevention)
+# ---------------------------------------------------------------------------
+
+def test_condense_old_tool_results():
+    from vox.llm import _condense_old_tool_results, _history
+    _history.clear()
+    # Simulate a conversation with tool results
+    _history.extend([
+        {"role": "user", "content": "what's the weather"},
+        {"role": "tool", "content": "Weather in Sherman TX: 72°F, partly cloudy, wind 5mph NW, humidity 45%, " * 3},
+        {"role": "assistant", "content": "It's 72°F and partly cloudy!"},
+        {"role": "user", "content": "show me a selfie"},
+        {"role": "tool", "content": "Image generated: /path/to/selfie.png with prompt 'beautiful woman' " * 3},
+        {"role": "assistant", "content": "Here you go!"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "Hey!"},
+    ])
+    _condense_old_tool_results()
+    # Old tool results (indices 1 and 4) should be condensed
+    assert _history[1]["content"].startswith("[previous result:")
+    assert len(_history[1]["content"]) < 120
+    # Recent messages (last 4) should be unchanged
+    assert _history[-1]["content"] == "Hey!"
+    assert _history[-2]["content"] == "hello"
+    _history.clear()
+
+
+def test_condense_preserves_recent_tools():
+    from vox.llm import _condense_old_tool_results, _history
+    _history.clear()
+    _history.extend([
+        {"role": "user", "content": "old message"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "what time is it"},
+        {"role": "tool", "content": "Current time: 2:30 PM, March 5 2026"},
+        {"role": "assistant", "content": "It's 2:30 PM!"},
+    ])
+    _condense_old_tool_results()
+    # The tool result at index 3 is within last 4 messages, should be preserved
+    assert _history[3]["content"] == "Current time: 2:30 PM, March 5 2026"
+    _history.clear()
