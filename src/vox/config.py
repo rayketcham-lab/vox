@@ -21,7 +21,9 @@ Path(HF_HOME).mkdir(parents=True, exist_ok=True)
 
 # Wake word
 PORCUPINE_ACCESS_KEY = os.environ.get("PORCUPINE_ACCESS_KEY", "")
-WAKE_WORD = "hey vox"
+WAKE_WORD = os.environ.get("WAKE_WORD", "hey vox")
+WAKE_SENSITIVITY = float(os.environ.get("WAKE_SENSITIVITY", "0.5"))
+LISTEN_MODE = os.environ.get("LISTEN_MODE", "wake")  # wake, ptt (push-to-talk), always
 
 # Ollama — dual-model setup
 # OLLAMA_MODEL: primary model for tool calling + general chat
@@ -40,6 +42,10 @@ WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
 
 # TTS
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")
+PIPER_MODEL = os.environ.get("PIPER_MODEL", "en_US-amy-medium")
+PIPER_SPEAKER = int(os.environ.get("PIPER_SPEAKER", "0"))
+XTTS_MODEL = os.environ.get("XTTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")
+XTTS_VOICE_FILE = os.environ.get("XTTS_VOICE_FILE", "")  # WAV reference for voice cloning
 
 # Email (optional — SMTP for sending emails via tools)
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
@@ -54,7 +60,8 @@ USER_EMAIL = os.environ.get("USER_EMAIL", "")  # default "email me" recipient
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
 IMAGE_MODEL_NSFW = os.environ.get("IMAGE_MODEL_NSFW", "RunDiffusion/Juggernaut-X-v10")
 IMAGE_NSFW_FILTER = os.environ.get("IMAGE_NSFW_FILTER", "on")
-IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "30"))
+IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "40"))
+IMAGE_CFG = float(os.environ.get("IMAGE_CFG", "5.5"))
 IMAGE_WIDTH = int(os.environ.get("IMAGE_WIDTH", "1024"))
 IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "1024"))
 IMAGE_NEGATIVE_PROMPT = os.environ.get(
@@ -87,6 +94,11 @@ WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")  # noqa: S104 — intentional L
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
 WEB_AUTH_USER = os.environ.get("WEB_AUTH_USER", "")  # HTTP Basic Auth (optional)
 WEB_AUTH_PASS = os.environ.get("WEB_AUTH_PASS", "")  # leave empty to disable auth
+
+# Search backend: ddg (default), brave, searxng
+SEARCH_ENGINE = os.environ.get("SEARCH_ENGINE", "ddg")
+BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "")  # e.g. "http://192.168.1.50:8080"
 
 # Google Maps (optional — static map images for location requests)
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
